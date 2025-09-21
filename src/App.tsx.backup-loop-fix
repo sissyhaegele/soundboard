@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from "react"
+﻿import React, { useEffect, useRef, useState, useCallback } from "react"
 import {
   Play, Pause, Settings, X, Download, Upload, ChevronLeft, ChevronRight,
   Keyboard, Music2, Plug, Unplug, Trash2, Save, MonitorDown, AlertTriangle,
@@ -1615,17 +1615,7 @@ export default function App(){
                         isActive={activeChannels.has(pad.id)}
                         activeChannels={activeChannels.size}
                         onPlay={() => playPad(pad)}
-                        onPause={() => {
-  const channel = activeChannels.get(pad.id);
-  if (channel) {
-    channel.stop(pad.fadeMs || 1000);
-    setActiveChannels(prev => {
-      const next = new Map(prev);
-      next.delete(pad.id);
-      return next;
-    });
-  }
-}} // Toggle
+                        onPause={() => playPad(pad)} // Toggle
                         onEdit={() => setShowEdit({ bankIdx: currentBankIdx, pad })}
                         isDragging={snapshot.isDragging}
                       />

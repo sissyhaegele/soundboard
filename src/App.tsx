@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from "react"
+﻿import React, { useEffect, useRef, useState, useCallback } from "react"
 import {
   Play, Pause, Settings, X, Download, Upload, ChevronLeft, ChevronRight,
   Keyboard, Music2, Plug, Unplug, Trash2, Save, MonitorDown, AlertTriangle,
@@ -7,7 +7,6 @@ import {
 import JSZip from "jszip"
 import { saveAs } from "file-saver"
 import { DragDropContext, Droppable, Draggable, DropResult } from 'react-beautiful-dnd'
-import WaveSurfer from 'wavesurfer.js'
 
 // Globaler Audio Context für bessere Autoplay-Kompatibilität
 let globalAudioContext: AudioContext | null = null;
@@ -301,102 +300,6 @@ const LS_MIDI    = "musicpad_offline_midi_enabled_v1"
 const LS_MIDI_IN = "musicpad_offline_midi_input_id_v1"
 const LS_MULTI   = "musicpad_offline_multichannel_v1"
 
-/* ===================== Waveform Component ===================== */
-function WaveformDisplay({ pad, isActive, height = 40 }: {
-  pad: Pad;
-  isActive: boolean;
-  height?: number;
-}) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const wavesurferRef = useRef<WaveSurfer | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  
-  useEffect(() => {
-    if (!containerRef.current || !pad.src || pad.source === "url") return;
-    
-    const loadWaveform = async () => {
-      setIsLoading(true);
-      
-      try {
-        let audioUrl = "";
-        
-        if (pad.source === "idb") {
-          const blob = await idbGet(idbKeyForPad(pad.id));
-          if (!blob) return;
-          audioUrl = URL.createObjectURL(blob);
-        } else if (pad.source === "proxy") {
-          audioUrl = getProxyUrl(pad.src.replace('proxy:', ''));
-        }
-        
-        if (!audioUrl) return;
-        
-        const wavesurfer = WaveSurfer.create({
-          container: containerRef.current!,
-          waveColor: isActive ? '#059669' : '#10b981',
-          progressColor: '#064e3b',
-          cursorColor: 'transparent',
-          height: height,
-          normalize: true,
-          interact: false,
-          hideScrollbar: true,
-          barWidth: 2,
-          barGap: 1,
-          barRadius: 2
-        });
-        
-        await wavesurfer.load(audioUrl);
-        wavesurferRef.current = wavesurfer;
-        
-        if (audioUrl.startsWith('blob:')) {
-          URL.revokeObjectURL(audioUrl);
-        }
-      } catch (error) {
-        console.error('Waveform Ladefehler:', error);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-    
-    loadWaveform();
-    
-    return () => {
-      if (wavesurferRef.current) {
-        wavesurferRef.current.destroy();
-      }
-    };
-  }, [pad.src, pad.source, pad.id]);
-  
-  useEffect(() => {
-    if (wavesurferRef.current) {
-      wavesurferRef.current.setOptions({
-        waveColor: isActive ? '#059669' : '#10b981',
-      });
-    }
-  }, [isActive]);
-  
-  if (!pad.src || pad.source === "url") return null;
-  
-  return (
-    <div className="relative w-full mt-2">
-      {isLoading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-neutral-100 rounded">
-          <span className="text-xs text-neutral-500">Lade Wellenform...</span>
-        </div>
-      )}
-      <div ref={containerRef} className={isLoading ? 'opacity-0' : 'opacity-100 transition-opacity'} />
-      {/* Start-Zeit Marker */}
-      {pad.startTime && pad.startTime > 0 && wavesurferRef.current && (
-        <div 
-          className="absolute top-0 bottom-0 w-0.5 bg-red-500"
-          style={{
-            left: `${(pad.startTime / wavesurferRef.current.getDuration()) * 100}%`
-          }}
-          title={`Start: ${secondsToTimeString(pad.startTime)}`}
-        />
-      )}
-    </div>
-  );
-}
 
 /* ===================== UI: Pad ===================== */
 function PadButton(p:{
@@ -500,9 +403,7 @@ function PadButton(p:{
         </div>
       )}
       
-      {/* Wellenform-Anzeige */}
-      <WaveformDisplay pad={p.pad} isActive={p.isActive} height={30} />
-    </div>
+      {/* Wellenform-Anzeige */}    </div>
   )
 }
 

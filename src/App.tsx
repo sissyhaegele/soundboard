@@ -1,0 +1,1841 @@
+import React, { useEffect, useRef, useState, useCallback } from "react"
+import {
+  Play, Pause, Settings, X, Download, Upload, ChevronLeft, ChevronRight,
+  Keyboard, Music2, Plug, Unplug, Trash2, Save, MonitorDown, AlertTriangle,
+  ExternalLink, Globe, Volume2, GripVertical, Layers, Clock, Repeat
+} from "lucide-react"
+import JSZip from "jszip"
+import { saveAs } from "file-saver"
+import { DragDropContext, Droppable, Draggable, DropResult } from 'react-beautiful-dnd'
+import WaveSurfer from 'wavesurfer.js'
+
+// Globaler Audio Context für bessere Autoplay-Kompatibilität
+let globalAudioContext: AudioContext | null = null;
+
+// Audio Context initialisieren
+const getAudioContext = () => {
+  if (!globalAudioContext) {
+    globalAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+  }
+  return globalAudioContext;
+};
+
+/* ===================== Zeit-Format Utils ===================== */
+function timeStringToSeconds(timeStr: string): number {
+  if (!timeStr) return 0;
+  
+  // Unterstützt Formate: "90" (90 Sekunden), "1:30" (1:30), "1:30.5" (1:30.5)
+  const parts = timeStr.split(':');
+  if (parts.length === 1) {
+    return parseFloat(parts[0]) || 0;
+  } else if (parts.length === 2) {
+    const minutes = parseInt(parts[0]) || 0;
+    const seconds = parseFloat(parts[1]) || 0;
+    return minutes * 60 + seconds;
+  }
+  return 0;
+}
+
+function secondsToTimeString(seconds: number): string {
+  if (!seconds) return "0:00";
+  const mins = Math.floor(seconds / 60);
+  const secs = (seconds % 60);
+  const secStr = secs < 10 ? `0${secs.toFixed(1)}` : secs.toFixed(1);
+  return `${mins}:${secStr}`;
+}
+
+/* ===================== Audio Channel Klasse ===================== */
+class AudioChannel {
+  audio: HTMLAudioElement;
+  id: string;
+  padId: string | null = null;
+  private fadeInterval: number | null = null;
+  
+  constructor(id: string) {
+    this.id = id;
+    this.audio = new Audio();
+    this.audio.preload = 'none';
+  }
+  
+  async play(src: string, volume: number, fadeMs: number, padId: string, startTime = 0, loop = false): Promise<void> {
+    this.padId = padId;
+    this.audio.src = src;
+    this.audio.volume = 0;
+    this.audio.loop = loop;
+    
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error("Timeout beim Laden"));
+      }, 10000);
+      
+      const onCanPlay = () => {
+        clearTimeout(timeout);
+        this.audio.removeEventListener('canplay', onCanPlay);
+        this.audio.removeEventListener('error', onError);
+        
+        // Setze Start-Zeit nach dem Laden
+        if (startTime > 0 && this.audio.duration >= startTime) {
+          this.audio.currentTime = startTime;
+        }
+        
+        resolve();
+      };
+      
+      const onError = () => {
+        clearTimeout(timeout);
+        this.audio.removeEventListener('canplay', onCanPlay);
+        this.audio.removeEventListener('error', onError);
+        reject(new Error("Ladefehler"));
+      };
+      
+      this.audio.addEventListener('canplay', onCanPlay, { once: true });
+      this.audio.addEventListener('error', onError, { once: true });
+      this.audio.load();
+    });
+    
+    await this.audio.play();
+    await this.fadeVolume(0, volume, fadeMs);
+  }
+  
+  async stop(fadeMs: number): Promise<void> {
+    await this.fadeVolume(this.audio.volume, 0, fadeMs);
+    this.audio.pause();
+    this.audio.currentTime = 0;
+    this.audio.loop = false;
+    this.padId = null;
+    if (this.audio.src.startsWith('blob:')) {
+      URL.revokeObjectURL(this.audio.src);
+    }
+  }
+  
+  setVolume(volume: number) {
+    this.audio.volume = Math.max(0, Math.min(1, volume));
+  }
+  
+  getCurrentTime(): number {
+    return this.audio.currentTime;
+  }
+  
+  getDuration(): number {
+    return this.audio.duration;
+  }
+  
+  private async fadeVolume(from: number, to: number, ms: number): Promise<void> {
+    if (this.fadeInterval) {
+      clearInterval(this.fadeInterval);
+    }
+    
+    const steps = 30;
+    const diff = to - from;
+    const dt = ms / steps;
+    let currentStep = 0;
+    
+    return new Promise<void>((resolve) => {
+      this.fadeInterval = window.setInterval(() => {
+        currentStep++;
+        if (currentStep > steps) {
+          if (this.fadeInterval) clearInterval(this.fadeInterval);
+          this.fadeInterval = null;
+          this.audio.volume = to;
+          resolve();
+        } else {
+          this.audio.volume = Math.max(0, Math.min(1, from + diff * (currentStep / steps)));
+        }
+      }, dt);
+    });
+  }
+}
+
+/* ===================== Typen ===================== */
+type SourceType = "url" | "idb" | "proxy"
+type Pad = {
+  id: string
+  title: string
+  src: string
+  source: SourceType
+  volume: number
+  fadeMs: number
+  startTime?: number  // Start-Zeit in Sekunden
+  loop?: boolean      // Loop-Modus
+  filename?: string
+  size?: number
+  hotkey?: string
+  midiNote?: number
+  midiChannel?: number
+  corsError?: boolean
+  lastError?: string
+  waveform?: string
+}
+type Bank = { id: string; name: string; pads: Pad[] }
+
+type RestoreOptions = {
+  bankStrategy: "mergeByName" | "replaceExisting" | "createMissing"
+  padStrategy: "keepExisting" | "overwrite" | "duplicate"
+}
+type ZipEntryInfo = {
+  path: string
+  bankName: string
+  baseName: string
+  ext: string
+  size: number
+}
+type RestoreAnalysis = {
+  banks: string[]
+  entries: ZipEntryInfo[]
+  perBankCounts: Record<string, number>
+}
+
+/* ===================== Utils ===================== */
+function uid() { return Math.random().toString(36).slice(2) }
+function clamp(n:number,min=0,max=1){ return Math.max(min, Math.min(max,n)) }
+function emptyPad(): Pad {
+  return { id: uid(), title: "", src: "", source: "url", volume: 0.9, fadeMs: 1500, startTime: 0, loop: false }
+}
+function defaultBank(name:string): Bank {
+  return { id: uid(), name, pads: Array.from({length: 12}, emptyPad) }
+}
+function hotLabel(idx:number): string | undefined {
+  if(idx>=0 && idx<=8) return String(idx+1)
+  if(idx===9) return "0"
+  return undefined
+}
+
+/* ===================== CORS & Proxy Utils ===================== */
+const PROXY_SERVICES = [
+  'https://cors-anywhere.herokuapp.com/',
+  'https://api.allorigins.win/raw?url=',
+  'https://corsproxy.io/?'
+]
+
+function getProxyUrl(originalUrl: string, proxyIndex = 0): string {
+  if (proxyIndex >= PROXY_SERVICES.length) return originalUrl
+  return PROXY_SERVICES[proxyIndex] + encodeURIComponent(originalUrl)
+}
+
+function isValidAudioUrl(url: string): boolean {
+  if (!url) return false
+  try {
+    new URL(url)
+    const audioExtensions = ['.mp3', '.wav', '.m4a', '.ogg', '.aac', '.flac']
+    const urlLower = url.toLowerCase()
+    return audioExtensions.some(ext => urlLower.includes(ext)) || 
+           urlLower.includes('audio') ||
+           urlLower.includes('sound')
+  } catch {
+    return false
+  }
+}
+
+async function testAudioUrl(url: string): Promise<{success: boolean, error?: string}> {
+  return new Promise((resolve) => {
+    const audio = new Audio()
+    const timeout = setTimeout(() => {
+      audio.src = ''
+      resolve({ success: false, error: 'Timeout - URL reagiert nicht' })
+    }, 5000)
+
+    audio.oncanplay = () => {
+      clearTimeout(timeout)
+      audio.src = ''
+      resolve({ success: true })
+    }
+
+    audio.onerror = () => {
+      clearTimeout(timeout)
+      audio.src = ''
+      const errorMsg = audio.error?.code === 4 ? 'CORS-Fehler oder nicht unterstütztes Format' : 'Ladefehler'
+      resolve({ success: false, error: errorMsg })
+    }
+
+    audio.src = url
+  })
+}
+
+/* ===================== IndexedDB ===================== */
+const DB_NAME = "musicpad-offline-db"
+const STORE   = "audioBlobs"
+function openDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1)
+    req.onupgradeneeded = () => req.result.createObjectStore(STORE)
+    req.onsuccess = () => resolve(req.result)
+    req.onerror = () => reject(req.error)
+  })
+}
+async function idbPut(key: string, blob: Blob) {
+  const db = await openDB()
+  await new Promise<void>((res, rej) => {
+    const tx = db.transaction(STORE, "readwrite")
+    tx.objectStore(STORE).put(blob, key)
+    tx.oncomplete = () => res()
+    tx.onerror = () => rej(tx.error)
+  })
+}
+async function idbGet(key: string): Promise<Blob | undefined> {
+  const db = await openDB()
+  return await new Promise((res, rej) => {
+    const tx = db.transaction(STORE, "readonly")
+    const rq = tx.objectStore(STORE).get(key)
+    rq.onsuccess = () => res(rq.result as Blob | undefined)
+    rq.onerror = () => rej(rq.error)
+  })
+}
+async function idbDel(key: string) {
+  const db = await openDB()
+  await new Promise<void>((res, rej) => {
+    const tx = db.transaction(STORE, "readwrite")
+    tx.objectStore(STORE).delete(key)
+    tx.oncomplete = () => res()
+    tx.onerror = () => rej(tx.error)
+  })
+}
+function idbKeyForPad(padId: string) { return `pad:${padId}` }
+
+/* ===================== LocalStorage Keys ===================== */
+const LS_VERSION = "musicpad_v7"
+const LS_BANKS   = "musicpad_offline_banks_v7"
+const LS_MASTER  = "musicpad_offline_master_v1"
+const LS_CURBANK = "musicpad_offline_current_bank_v1"
+const LS_HOTKEYS = "musicpad_offline_hotkeys_enabled_v1"
+const LS_MIDI    = "musicpad_offline_midi_enabled_v1"
+const LS_MIDI_IN = "musicpad_offline_midi_input_id_v1"
+const LS_MULTI   = "musicpad_offline_multichannel_v1"
+
+/* ===================== Waveform Component ===================== */
+function WaveformDisplay({ pad, isActive, height = 40 }: {
+  pad: Pad;
+  isActive: boolean;
+  height?: number;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const wavesurferRef = useRef<WaveSurfer | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  
+  useEffect(() => {
+    if (!containerRef.current || !pad.src || pad.source === "url") return;
+    
+    const loadWaveform = async () => {
+      setIsLoading(true);
+      
+      try {
+        let audioUrl = "";
+        
+        if (pad.source === "idb") {
+          const blob = await idbGet(idbKeyForPad(pad.id));
+          if (!blob) return;
+          audioUrl = URL.createObjectURL(blob);
+        } else if (pad.source === "proxy") {
+          audioUrl = getProxyUrl(pad.src.replace('proxy:', ''));
+        }
+        
+        if (!audioUrl) return;
+        
+        const wavesurfer = WaveSurfer.create({
+          container: containerRef.current!,
+          waveColor: isActive ? '#059669' : '#10b981',
+          progressColor: '#064e3b',
+          cursorColor: 'transparent',
+          height: height,
+          normalize: true,
+          interact: false,
+          hideScrollbar: true,
+          barWidth: 2,
+          barGap: 1,
+          barRadius: 2
+        });
+        
+        await wavesurfer.load(audioUrl);
+        wavesurferRef.current = wavesurfer;
+        
+        if (audioUrl.startsWith('blob:')) {
+          URL.revokeObjectURL(audioUrl);
+        }
+      } catch (error) {
+        console.error('Waveform Ladefehler:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    
+    loadWaveform();
+    
+    return () => {
+      if (wavesurferRef.current) {
+        wavesurferRef.current.destroy();
+      }
+    };
+  }, [pad.src, pad.source, pad.id]);
+  
+  useEffect(() => {
+    if (wavesurferRef.current) {
+      wavesurferRef.current.setOptions({
+        waveColor: isActive ? '#059669' : '#10b981',
+      });
+    }
+  }, [isActive]);
+  
+  if (!pad.src || pad.source === "url") return null;
+  
+  return (
+    <div className="relative w-full mt-2">
+      {isLoading && (
+        <div className="absolute inset-0 flex items-center justify-center bg-neutral-100 rounded">
+          <span className="text-xs text-neutral-500">Lade Wellenform...</span>
+        </div>
+      )}
+      <div ref={containerRef} className={isLoading ? 'opacity-0' : 'opacity-100 transition-opacity'} />
+      {/* Start-Zeit Marker */}
+      {pad.startTime && pad.startTime > 0 && wavesurferRef.current && (
+        <div 
+          className="absolute top-0 bottom-0 w-0.5 bg-red-500"
+          style={{
+            left: `${(pad.startTime / wavesurferRef.current.getDuration()) * 100}%`
+          }}
+          title={`Start: ${secondsToTimeString(pad.startTime)}`}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ===================== UI: Pad ===================== */
+function PadButton(p:{
+  index:number; 
+  pad:Pad; 
+  isActive:boolean; 
+  activeChannels: number;
+  onPlay:()=>void; 
+  onPause:()=>void; 
+  onEdit:()=>void;
+  isDragging?: boolean;
+}) {
+  const cls = p.isActive 
+    ? "rounded-2xl shadow-lg p-4 border-2 border-emerald-500 bg-emerald-50"
+    : "rounded-2xl shadow-lg p-4 border border-neutral-200 bg-white hover:border-neutral-300 hover:shadow-xl transition-all"
+  
+  const srcLabel = p.pad.source === "idb"
+    ? (p.pad.filename ? `Lokal: ${p.pad.filename}` : "Lokal gespeichert")
+    : p.pad.source === "proxy" 
+    ? `Proxy: ${p.pad.src.replace('proxy:', '').substring(0, 40)}...`
+    : (p.pad.src || "Keine Quelle (Datei oder Link)")
+  
+  const hk = p.pad.hotkey ? p.pad.hotkey.toUpperCase() : hotLabel(p.index)
+  
+  return (
+    <div className={`${cls} ${p.isDragging ? 'opacity-50' : ''} relative`}>
+      {/* Drag Handle */}
+      <div className="absolute top-2 left-2 text-neutral-400 cursor-move">
+        <GripVertical size={16}/>
+      </div>
+      
+      <div className="flex items-center justify-between mb-2">
+        <div className="font-semibold truncate flex items-center gap-2 pl-6">
+          {hk && <span className="text-xs px-1.5 py-0.5 rounded bg-neutral-200">{hk}</span>}
+          <span className="truncate">{p.pad.title || `Pad ${p.index+1}`}</span>
+        </div>
+        <div className="flex items-center gap-1">
+          {p.pad.loop && (
+            <span title="Loop-Modus aktiv">
+              <Repeat size={14} className="text-purple-500" />
+            </span>
+          )}
+          {p.pad.startTime && p.pad.startTime > 0 && (
+            <span title={`Start: ${secondsToTimeString(p.pad.startTime)}`}>
+              <Clock size={14} className="text-blue-500" />
+            </span>
+          )}
+          {p.pad.corsError && (
+            <span title="CORS-Problem erkannt">
+              <AlertTriangle size={16} className="text-orange-500" />
+            </span>
+          )}
+          {p.pad.source === "proxy" && (
+            <span title="Über Proxy geladen">
+              <Globe size={16} className="text-blue-500" />
+            </span>
+          )}
+          <button 
+            className="p-2 rounded-xl hover:bg-neutral-100" 
+            onClick={(e) => {
+              e.stopPropagation();
+              p.onEdit();
+            }} 
+            title="Pad-Einstellungen"
+          >
+            <Settings size={18}/>
+          </button>
+        </div>
+      </div>
+      
+      {p.isActive
+        ? <button className="px-3 py-2 rounded-xl bg-neutral-900 text-white w-full" onClick={p.onPause}>
+            <Pause size={18}/> Stop
+          </button>
+        : <button className="px-3 py-2 rounded-xl bg-emerald-600 text-white w-full hover:bg-emerald-700 transition-colors" onClick={p.onPlay}>
+            <Play size={18}/> Play
+          </button>
+      }
+      
+      <div className="mt-2 text-xs text-neutral-500 truncate">{srcLabel}</div>
+      
+      {/* Zeit-Anzeigen */}
+      <div className="flex gap-3 mt-1">
+        {(p.pad.startTime && p.pad.startTime > 0) && (
+          <div className="text-xs text-blue-600 flex items-center gap-1">
+            <Clock size={10}/>
+            Start: {secondsToTimeString(p.pad.startTime)}
+          </div>
+        )}
+        {p.pad.loop && (
+          <div className="text-xs text-purple-600 flex items-center gap-1">
+            <Repeat size={10}/>
+            Loop
+          </div>
+        )}
+      </div>
+      
+      {p.pad.lastError && (
+        <div className="mt-1 text-xs text-red-500 truncate" title={p.pad.lastError}>
+          ⚠ {p.pad.lastError}
+        </div>
+      )}
+      
+      {/* Wellenform-Anzeige */}
+      <WaveformDisplay pad={p.pad} isActive={p.isActive} height={30} />
+    </div>
+  )
+}
+
+/* ===================== UI: Edit Modal ===================== */
+function EditPadModal(props:{
+  pad: Pad
+  onClose: ()=>void
+  onSave: (p:Pad)=>void
+  onClearLocal: (p:Pad)=>void
+  onStartMidiLearn: (padId:string)=>void
+  onTestUrl: (url:string)=>Promise<void>
+  onTryProxy: (pad:Pad)=>Promise<void>
+  midiLearningFor?: string | null
+  isTestingUrl?: boolean
+}){
+  const { pad, onClose, onSave, onClearLocal, onStartMidiLearn, onTestUrl, onTryProxy, midiLearningFor, isTestingUrl } = props
+  const [pState, setP] = useState<Pad>(pad)
+  const [urlToTest, setUrlToTest] = useState("")
+  const [timeInput, setTimeInput] = useState(secondsToTimeString(pad.startTime || 0))
+
+  const handleTimeInputChange = (value: string) => {
+    setTimeInput(value)
+    const seconds = timeStringToSeconds(value)
+    setP({...pState, startTime: seconds})
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+      <div className="bg-white p-5 rounded-2xl w-full max-w-xl shadow-xl max-h-[90vh] overflow-y-auto">
+        <div className="flex justify-between mb-3">
+          <h3 className="text-lg font-semibold">Pad bearbeiten</h3>
+          <button onClick={onClose}><X size={18}/></button>
+        </div>
+
+        <label className="grid gap-1 mb-3">
+          <span className="text-sm">Titel</span>
+          <input className="border p-2 rounded-xl" value={pState.title} onChange={e=>setP({...pState, title: e.target.value})}/>
+        </label>
+
+        <div className="grid gap-1 mb-4">
+          <span className="text-sm font-medium">Link/URL (optional)</span>
+          <div className="flex gap-2">
+            <input
+              className="border p-2 rounded-xl flex-1"
+              placeholder="https://… (mp3/wav/m4a)"
+              value={pState.source === "url" ? pState.src : pState.source === "proxy" ? pState.src.replace('proxy:', '') : ""}
+              onChange={e=>{
+                const url = e.target.value.trim()
+                setP({
+                  ...pState,
+                  source: "url",
+                  src: url,
+                  filename: undefined,
+                  size: undefined,
+                  corsError: false,
+                  lastError: undefined
+                })
+                setUrlToTest(url)
+              }}
+            />
+            <button 
+              className="px-3 py-2 rounded-xl border text-sm flex items-center gap-1 disabled:opacity-50"
+              onClick={() => urlToTest && onTestUrl(urlToTest)}
+              disabled={!urlToTest || isTestingUrl}
+              title="URL auf CORS-Probleme testen"
+            >
+              <ExternalLink size={14}/>
+              {isTestingUrl ? "Test..." : "Test"}
+            </button>
+          </div>
+          
+          {pState.corsError && (
+            <div className="bg-orange-50 border border-orange-200 rounded-lg p-3 mt-2">
+              <div className="flex items-center gap-2 text-orange-700 text-sm mb-2">
+                <AlertTriangle size={16}/>
+                <span className="font-medium">CORS-Problem erkannt</span>
+              </div>
+              <p className="text-orange-600 text-xs mb-2">
+                Diese URL kann aufgrund von CORS-Beschränkungen nicht direkt geladen werden.
+              </p>
+              <button 
+                className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs flex items-center gap-1"
+                onClick={() => onTryProxy(pState)}
+              >
+                <Globe size={12}/>
+                Über Proxy versuchen
+              </button>
+            </div>
+          )}
+
+          <span className="text-xs text-neutral-500">
+            Hinweis: Manche URLs sind durch CORS geschützt. Verwende den Test-Button oder lade die Datei lokal hoch.
+          </span>
+        </div>
+
+        <div className="grid gap-1 mb-3">
+          <span className="text-sm font-medium">Datei lokal speichern</span>
+          <input
+            type="file"
+            accept="audio/*"
+            onChange={async e=>{
+              const f = e.target.files?.[0]
+              if(!f) return
+              if(!(f.type||"").startsWith("audio/")){ alert("Bitte mp3/wav/m4a wählen."); return }
+              try {
+                await idbPut(idbKeyForPad(pState.id), f)
+                setP({
+                  ...pState,
+                  source: "idb",
+                  src: "idb:"+pState.id,
+                  filename: f.name,
+                  size: f.size,
+                  corsError: false,
+                  lastError: undefined
+                })
+                alert("Datei lokal gespeichert.")
+              } catch (error) {
+                console.error('IndexedDB Fehler:', error)
+                alert("Fehler beim Speichern. Versuche es erneut oder lade die Seite neu.")
+              }
+            }}
+          />
+          {pState.source === "idb" && (
+            <div className="text-xs text-neutral-600 flex items-center justify-between">
+              <span>
+                Gespeichert: {pState.filename || "unbekannt"}{pState.size ? ` (${Math.round(pState.size/1024)} KB)` : ""}
+              </span>
+              <button className="px-2 py-1 rounded border" onClick={()=>onClearLocal(pState)}>Lokal löschen</button>
+            </div>
+          )}
+        </div>
+
+        <label className="grid gap-1 mb-3">
+          <span className="text-sm">Pad-Lautstärke: {Math.round((pState.volume??0.9)*100)}%</span>
+          <input type="range" min={0} max={1} step={0.01} value={pState.volume} onChange={e=>setP({...pState,volume:parseFloat(e.target.value)})}/>
+        </label>
+        
+        <label className="grid gap-1 mb-3">
+          <span className="text-sm">Fade-Dauer (ms)</span>
+          <input type="number" className="border p-2 rounded-xl" value={pState.fadeMs} onChange={e=>setP({...pState,fadeMs:parseInt(e.target.value||"0",10)})}/>
+        </label>
+
+        {/* Start-Zeit Einstellung */}
+        <div className="grid gap-1 mb-3 p-3 bg-blue-50 rounded-xl">
+          <span className="text-sm font-medium flex items-center gap-2">
+            <Clock size={14}/>
+            Start-Zeit
+          </span>
+          <div className="flex gap-2 items-center">
+            <input 
+              type="range" 
+              min={0} 
+              max={300} 
+              step={0.1} 
+              value={pState.startTime || 0} 
+              onChange={e => {
+                const seconds = parseFloat(e.target.value)
+                setP({...pState, startTime: seconds})
+                setTimeInput(secondsToTimeString(seconds))
+              }}
+              className="flex-1"
+            />
+            <input
+              type="text"
+              value={timeInput}
+              onChange={e => handleTimeInputChange(e.target.value)}
+              className="border rounded px-2 py-1 w-24 text-sm text-center"
+              placeholder="0:00"
+            />
+            <button
+              className="px-2 py-1 border rounded text-sm"
+              onClick={() => {
+                setP({...pState, startTime: 0})
+                setTimeInput("0:00")
+              }}
+            >
+              Reset
+            </button>
+          </div>
+          <span className="text-xs text-neutral-600 mt-1">
+            Format: MM:SS.S (z.B. 1:30.5 für 1 Minute 30.5 Sekunden) oder Sekunden (z.B. 90.5)
+          </span>
+        </div>
+
+        {/* Loop-Modus */}
+        <label className="flex items-center gap-2 mb-3 p-3 bg-purple-50 rounded-xl cursor-pointer">
+          <input 
+            type="checkbox" 
+            checked={pState.loop || false}
+            onChange={e=>setP({...pState, loop: e.target.checked})}
+            className="w-4 h-4"
+          />
+          <span className="text-sm font-medium flex items-center gap-2">
+            <Repeat size={14}/>
+            Loop-Modus
+          </span>
+          <span className="text-xs text-neutral-600">(wiederholt endlos)</span>
+        </label>
+
+        <div className="grid gap-1 mb-3">
+          <span className="text-sm">Tastatur-Hotkey (optional)</span>
+          <input
+            className="border p-2 rounded-xl"
+            placeholder="z. B. q oder F1"
+            value={pState.hotkey || ""}
+            onChange={e=>setP({...pState, hotkey: e.target.value.trim() || undefined})}
+          />
+          <span className="text-xs text-neutral-500">Hotkeys gelten global; Kollisionen möglich.</span>
+        </div>
+
+        <div className="grid gap-1 mb-3">
+          <span className="text-sm">MIDI (optional)</span>
+          <div className="flex items-center gap-2 text-sm">
+            <button
+              className={"px-3 py-1.5 rounded-xl border flex items-center gap-2 " + (midiLearningFor===pState.id ? "bg-emerald-600 text-white" : "")}
+              onClick={()=>onStartMidiLearn(pState.id)}
+              title="MIDI-Learn starten: Taste/Pad drücken"
+            >
+              <Music2 size={16}/>
+              {midiLearningFor===pState.id ? "MIDI-Learn aktiv… drücke Note" : "MIDI-Learn"}
+            </button>
+            {typeof pState.midiNote==="number" && (
+              <span className="text-neutral-600">
+                Note {pState.midiNote}{pState.midiChannel?` / Ch ${pState.midiChannel}`:""}
+              </span>
+            )}
+            {typeof pState.midiNote==="number" && (
+              <button className="px-2 py-1 rounded border" onClick={()=>setP({...pState, midiNote: undefined, midiChannel: undefined})}>Clear</button>
+            )}
+          </div>
+          <span className="text-xs text-neutral-500">Beim Lernen wird die nächste empfangene Note gespeichert.</span>
+        </div>
+
+        <div className="flex justify-end gap-2 mt-4">
+          <button className="px-3 py-2 rounded-xl border" onClick={onClose}>Abbrechen</button>
+          <button className="px-3 py-2 rounded-xl bg-emerald-600 text-white" onClick={()=>onSave(pState)}><Save size={16}/> Speichern</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ===================== App ===================== */
+export default function App(){
+  const [banks,setBanks] = useState<Bank[]>(
+    ()=>{ const s=localStorage.getItem(LS_BANKS)
+          if(s){ try{ const parsed = JSON.parse(s) as Bank[]; if(Array.isArray(parsed) && parsed.length) return parsed } catch{} }
+          return [ defaultBank("Bank 1") ]
+        }
+  )
+  const [currentBankIdx,setCurrentBankIdx] = useState<number>(()=> {
+    const s = localStorage.getItem(LS_CURBANK); const n = s? parseInt(s,10): 0
+    return isFinite(n) ? Math.min(Math.max(0,n), 0) : 0
+  })
+  const currentBank = banks[currentBankIdx]
+
+  const [masterVol,setMasterVol] = useState<number>(()=>parseFloat(localStorage.getItem(LS_MASTER)||"1") || 1)
+  const [audioUnlocked, setAudioUnlocked] = useState(true) // Da Chrome-Flag gesetzt
+  
+  // Multi-Channel Audio
+  const [multiChannelEnabled, setMultiChannelEnabled] = useState<boolean>(
+    ()=>localStorage.getItem(LS_MULTI)!=="0"
+  )
+  const [audioChannels] = useState<AudioChannel[]>(() => 
+    Array.from({ length: 8 }, (_, i) => new AudioChannel(`channel-${i}`))
+  )
+  const [activeChannels, setActiveChannels] = useState<Map<string, AudioChannel>>(new Map())
+
+  const [hotkeysEnabled,setHotkeysEnabled] = useState<boolean>(()=>localStorage.getItem(LS_HOTKEYS)!=="0")
+  const [showEdit,setShowEdit] = useState<{bankIdx:number; pad:Pad} | null>(null)
+  const [renamingBank,setRenamingBank] = useState<boolean>(false)
+  const [bankNameDraft,setBankNameDraft] = useState<string>("")
+  const [isTestingUrl, setIsTestingUrl] = useState(false)
+
+  const [installPromptEvt, setInstallPromptEvt] = useState<any>(null)
+  const [canInstall, setCanInstall] = useState(false)
+
+  const [midiEnabled,setMidiEnabled] = useState<boolean>(()=>localStorage.getItem(LS_MIDI)!=="0")
+  const [midiAccess,setMidiAccess] = useState<MIDIAccess|null>(null)
+  const [midiInputs,setMidiInputs] = useState<MIDIInput[]>([])
+  const [midiInputId,setMidiInputId] = useState<string|undefined>(()=>localStorage.getItem(LS_MIDI_IN) || undefined)
+  const midiInputRef = useRef<MIDIInput|null>(null)
+  const [midiLearningFor,setMidiLearningFor] = useState<string|null>(null)
+
+  const [restoreOpen, setRestoreOpen] = useState(false)
+  const [restoreAnalysis, setRestoreAnalysis] = useState<RestoreAnalysis | null>(null)
+  const [restoreFile, setRestoreFile] = useState<File | null>(null)
+  const [restoreOpts, setRestoreOpts] = useState<RestoreOptions>({
+    bankStrategy: "mergeByName",
+    padStrategy: "overwrite"
+  })
+  const [restoreBusy, setRestoreBusy] = useState(false)
+
+  /* ---------- Init & Persist ---------- */
+  useEffect(() => {
+    // Audio Context initialisieren
+    const ctx = getAudioContext();
+    if (ctx.state === 'suspended') {
+      ctx.resume();
+    }
+  }, [])
+  
+  useEffect(()=>{ 
+    try {
+      localStorage.setItem(LS_BANKS, JSON.stringify(banks))
+    } catch (error) {
+      console.warn('Fehler beim Speichern der Banks:', error)
+    }
+  },[banks])
+  
+  useEffect(()=>{ 
+    try {
+      localStorage.setItem(LS_MASTER, String(masterVol))
+    } catch (error) {
+      console.warn('Fehler beim Speichern der Master-Lautstärke:', error)
+    }
+  },[masterVol])
+  
+  useEffect(()=>{ 
+    try {
+      localStorage.setItem(LS_CURBANK, String(currentBankIdx))
+    } catch (error) {
+      console.warn('Fehler beim Speichern der aktuellen Bank:', error)
+    }
+  },[currentBankIdx])
+  
+  useEffect(()=>{ 
+    try {
+      localStorage.setItem(LS_HOTKEYS, hotkeysEnabled? "1":"0")
+    } catch (error) {
+      console.warn('Fehler beim Speichern der Hotkey-Einstellung:', error)
+    }
+  },[hotkeysEnabled])
+  
+  useEffect(()=>{ 
+    try {
+      localStorage.setItem(LS_MIDI, midiEnabled? "1":"0")
+    } catch (error) {
+      console.warn('Fehler beim Speichern der MIDI-Einstellung:', error)
+    }
+  },[midiEnabled])
+  
+  useEffect(()=>{ 
+    try {
+      localStorage.setItem(LS_MULTI, multiChannelEnabled? "1":"0")
+    } catch (error) {
+      console.warn('Fehler beim Speichern der Multi-Channel-Einstellung:', error)
+    }
+  },[multiChannelEnabled])
+  
+  useEffect(()=>{ 
+    if(midiInputId) {
+      try {
+        localStorage.setItem(LS_MIDI_IN, midiInputId)
+      } catch (error) {
+        console.warn('Fehler beim Speichern der MIDI-Input-ID:', error)
+      }
+    }
+  },[midiInputId])
+  
+  useEffect(()=>{ setBankNameDraft(currentBank.name) },[currentBankIdx])
+
+  useEffect(() => {
+    return () => {
+      // Cleanup beim Unmount
+      activeChannels.forEach(channel => {
+        channel.stop(0);
+      });
+      
+      detachMidiInput()
+    }
+  }, [])
+
+  /* ---------- PWA ---------- */
+  useEffect(()=>{
+    const registerServiceWorker = async () => {
+      if ('serviceWorker' in navigator) {
+        try {
+          const registration = await navigator.serviceWorker.register('/sw.js')
+          console.log('Service Worker registriert:', registration)
+        } catch (error) {
+          console.warn('Service Worker Registration fehlgeschlagen:', error)
+        }
+      }
+    }
+
+    const isPWASupported = () => {
+      return (
+        'serviceWorker' in navigator &&
+        'beforeinstallprompt' in window &&
+        (window.location.protocol === 'https:' || 
+        window.location.hostname === 'localhost' ||
+        window.location.hostname === '127.0.0.1')
+      )
+    }
+
+    registerServiceWorker()
+
+    if (!isPWASupported()) {
+      console.log('PWA nicht unterstützt - HTTPS erforderlich oder unsicherer Context')
+      return
+    }
+
+    const handler = (e: any) => { 
+      e.preventDefault()
+      setInstallPromptEvt(e)
+      setCanInstall(true)
+      console.log('PWA Install-Prompt empfangen')
+    }
+    
+    const checkIfInstalled = () => {
+      const isStandalone = window.matchMedia('(display-mode: standalone)').matches ||
+                          (window.navigator as any).standalone ||
+                          document.referrer.includes('android-app://')
+      
+      if (isStandalone) {
+        console.log('App bereits als PWA installiert')
+        setCanInstall(false)
+      }
+    }
+    
+    checkIfInstalled()
+    window.addEventListener("beforeinstallprompt", handler)
+    
+    const fallbackTimer = setTimeout(() => {
+      if (!installPromptEvt && isPWASupported() && !canInstall) {
+        console.log('Kein beforeinstallprompt Event - zeige manuellen Button')
+        setCanInstall(true)
+      }
+    }, 3000)
+    
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handler)
+      clearTimeout(fallbackTimer)
+    }
+  },[installPromptEvt, canInstall])
+  
+  async function handleInstallClick(){
+    if(!installPromptEvt) {
+      const isSecure = window.location.protocol === 'https:' || 
+                      window.location.hostname === 'localhost'
+      
+      if (!isSecure) {
+        alert('App-Installation nur über HTTPS möglich. In der Production-Umgebung verfügbar.')
+        return
+      }
+      
+      alert(`Um diese App zu installieren:\n\nChrome/Edge: Menü → "App installieren"\nFirefox: Adressleiste → Plus-Symbol\nSafari: Teilen → "Zum Home-Bildschirm"`)
+      return
+    }
+    
+    try {
+      await installPromptEvt.prompt()
+      const choiceResult = await installPromptEvt.userChoice
+      console.log('PWA Install Choice:', choiceResult.outcome)
+      setInstallPromptEvt(null)
+      setCanInstall(false)
+    } catch (error) {
+      console.warn("PWA Installation fehlgeschlagen:", error)
+      setCanInstall(false)
+    }
+  }
+
+  /* ---------- Live-Volume für aktive Channels ---------- */
+  useEffect(()=>{
+    activeChannels.forEach((channel, padId) => {
+      const pad = currentBank.pads.find(p => p.id === padId)
+      if (pad) {
+        const newVolume = clamp((pad.volume ?? 1) * masterVol)
+        channel.setVolume(newVolume)
+      }
+    })
+  },[masterVol, banks, currentBankIdx, activeChannels])
+
+  /* ---------- Pad Error Utils ---------- */
+  function updatePadError(padId: string, error: string, corsError = false) {
+    setBanks(prev => prev.map((b, idx) => 
+      idx === currentBankIdx ? {
+        ...b,
+        pads: b.pads.map(p => 
+          p.id === padId ? { ...p, lastError: error, corsError } : p
+        )
+      } : b
+    ))
+  }
+  
+  function clearPadError(padId: string) {
+    setBanks(prev => prev.map((b, idx) => 
+      idx === currentBankIdx ? {
+        ...b,
+        pads: b.pads.map(p => 
+          p.id === padId ? { ...p, lastError: undefined, corsError: false } : p
+        )
+      } : b
+    ))
+  }
+
+  /* ---------- URL Testing ---------- */
+  async function testUrlForCors(url: string) {
+    setIsTestingUrl(true)
+    try {
+      if (!isValidAudioUrl(url)) {
+        alert("URL scheint keine Audio-Datei zu sein. Unterstützte Formate: mp3, wav, m4a, ogg, aac")
+        return
+      }
+      
+      const result = await testAudioUrl(url)
+      if (result.success) {
+        alert("✅ URL ist erreichbar und sollte funktionieren!")
+        if (showEdit) {
+          setShowEdit(prev => prev ? {
+            ...prev,
+            pad: { ...prev.pad, corsError: false, lastError: undefined }
+          } : null)
+        }
+      } else {
+        alert(`❌ Problem mit URL: ${result.error}\n\nTipp: Versuche einen Proxy oder lade die Datei lokal hoch.`)
+      }
+    } catch (error) {
+      alert("Test fehlgeschlagen. Prüfe die URL und versuche es erneut.")
+    } finally {
+      setIsTestingUrl(false)
+    }
+  }
+
+  async function tryProxyForPad(pad: Pad) {
+    const originalUrl = pad.src.replace('proxy:', '')
+    for (let i = 0; i < PROXY_SERVICES.length; i++) {
+      const proxyUrl = getProxyUrl(originalUrl, i)
+      const result = await testAudioUrl(proxyUrl)
+      if (result.success) {
+        const updatedPad = {
+          ...pad,
+          source: "proxy" as SourceType,
+          src: "proxy:" + originalUrl,
+          corsError: false,
+          lastError: undefined
+        }
+        setBanks(prev => prev.map((b, idx) => 
+          idx === currentBankIdx ? {
+            ...b,
+            pads: b.pads.map(p => p.id === pad.id ? updatedPad : p)
+          } : b
+        ))
+        if (showEdit) {
+          setShowEdit(prev => prev ? { ...prev, pad: updatedPad } : null)
+        }
+        alert(`✅ Proxy ${i + 1} funktioniert! Pad wurde aktualisiert.`)
+        return
+      }
+    }
+    alert("❌ Keiner der verfügbaren Proxies kann diese URL laden. Versuche eine andere URL oder lade die Datei lokal hoch.")
+  }
+
+  /* ---------- Drag & Drop Handler ---------- */
+  const handleDragEnd = (result: DropResult) => {
+    if (!result.destination) return
+    
+    const newPads = Array.from(currentBank.pads)
+    const [reorderedItem] = newPads.splice(result.source.index, 1)
+    newPads.splice(result.destination.index, 0, reorderedItem)
+    
+    setBanks(prev => prev.map((b, idx) => 
+      idx === currentBankIdx ? { ...b, pads: newPads } : b
+    ))
+  }
+
+  /* ---------- Hotkeys ---------- */
+  useEffect(() => {
+    if (!hotkeysEnabled) return
+    
+    const handler = (ev: KeyboardEvent) => {
+      const tag = (ev.target as HTMLElement)?.tagName?.toLowerCase()
+      if (tag === "input" || tag === "textarea" || (ev as any).isComposing) return
+
+      if (ev.code === "Space") { 
+        ev.preventDefault()
+        stopAllChannels()
+        return 
+      }
+
+      const hkPad = currentBank.pads.find(p => p.hotkey && p.hotkey.toLowerCase() === ev.key.toLowerCase())
+      if (hkPad) {
+        ev.preventDefault()
+        playPad(hkPad)
+        return
+      }
+
+      let idx = -1
+      if (ev.key >= "1" && ev.key <= "9") idx = parseInt(ev.key, 10) - 1
+      else if (ev.key === "0") idx = 9
+      
+      if (idx >= 0 && idx < currentBank.pads.length) {
+        ev.preventDefault()
+        const pad = currentBank.pads[idx]
+        playPad(pad)
+      }
+    }
+    
+    window.addEventListener("keydown", handler)
+    
+    return () => {
+      window.removeEventListener("keydown", handler)
+    }
+  }, [hotkeysEnabled, currentBankIdx, banks])
+
+  /* ---------- MIDI ---------- */
+  useEffect(()=>{
+    if(!midiEnabled){ 
+      detachMidiInput()
+      setMidiAccess(null)
+      setMidiInputs([])
+      return 
+    }
+    
+    if(!navigator.requestMIDIAccess){ 
+      console.warn("WebMIDI nicht verfügbar (Chrome/Edge erforderlich)")
+      return 
+    }
+    
+    let isMounted = true
+    
+    navigator.requestMIDIAccess({ sysex:false })
+      .then(access=>{
+        if (!isMounted) return
+        
+        setMidiAccess(access)
+        refreshInputs(access)
+        
+        const stateChangeHandler = () => {
+          if (isMounted) refreshInputs(access)
+        }
+        access.onstatechange = stateChangeHandler
+      })
+      .catch(err=>{
+        if (isMounted) {
+          console.warn("MIDI Zugriff abgelehnt:", err)
+          setMidiEnabled(false)
+        }
+      })
+    
+    return () => {
+      isMounted = false
+      detachMidiInput()
+    }
+  },[midiEnabled])
+
+  useEffect(()=>{
+    if(!midiAccess) return
+    
+    detachMidiInput()
+    const input = midiInputId
+      ? Array.from(midiAccess.inputs.values()).find((i: MIDIInput)=>i.id===midiInputId)
+      : Array.from(midiAccess.inputs.values())[0]
+    
+    if(input) attachMidiInput(input)
+    
+    return () => {
+      detachMidiInput()
+    }
+  },[midiAccess, midiInputId])
+
+  function refreshInputs(access: MIDIAccess){
+    const ins = Array.from(access.inputs.values())
+    setMidiInputs(ins)
+    if(!ins.length){ 
+      detachMidiInput()
+      return 
+    }
+    if(midiInputId && !ins.find((i: MIDIInput)=>i.id===midiInputId)){ 
+      setMidiInputId(undefined) 
+    }
+  }
+  
+  function attachMidiInput(input: MIDIInput){
+    input.onmidimessage = onMidi
+    midiInputRef.current = input
+  }
+  
+  function detachMidiInput(){
+    const inp = midiInputRef.current
+    if(inp){ 
+      inp.onmidimessage = null 
+    }
+    midiInputRef.current = null
+  }
+
+  function parseMidi(msg: MIDIMessageEvent){
+    const [status, d1, d2] = msg.data
+    const cmd = status & 0xF0
+    const ch  = (status & 0x0F) + 1
+    return { cmd, note:d1, vel:d2, channel: ch }
+  }
+  
+  function onMidi(ev: MIDIMessageEvent){
+    const { cmd, note, vel, channel } = parseMidi(ev)
+    if(cmd===0x90 && vel>0){
+      if(midiLearningFor){
+        setBanks(prev => prev.map((b,i)=> i!==currentBankIdx ? b : ({
+          ...b,
+          pads: b.pads.map(p=> p.id===midiLearningFor ? ({...p, midiNote: note, midiChannel: channel}) : p)
+        })))
+        setMidiLearningFor(null)
+        return
+      }
+      const match = currentBank.pads.find(p => typeof p.midiNote==="number"
+        && p.midiNote===note
+        && (!p.midiChannel || p.midiChannel===channel))
+      if(match){
+        playPad(match)
+      }
+    }
+  }
+
+  /* ---------- Multi-Channel Player ---------- */
+  async function playPad(pad: Pad) {
+    if (multiChannelEnabled) {
+      // Multi-Channel Mode
+      const existingChannel = activeChannels.get(pad.id)
+      if (existingChannel) {
+        // Pad läuft bereits, stoppe es
+        await existingChannel.stop(pad.fadeMs)
+        setActiveChannels(prev => {
+          const next = new Map(prev)
+          next.delete(pad.id)
+          return next
+        })
+        return
+      }
+      
+      // Finde freien Kanal
+      const freeChannel = audioChannels.find(ch => !ch.padId)
+      if (!freeChannel) {
+        alert('Alle 8 Audio-Kanäle sind belegt!')
+        return
+      }
+      
+      try {
+        let audioSrc = ""
+        
+        if (pad.source === "idb") {
+          const blob = await idbGet(idbKeyForPad(pad.id))
+          if (!blob) {
+            updatePadError(pad.id, "Lokale Datei nicht gefunden")
+            alert("Lokale Datei nicht gefunden. Bitte neu auswählen.")
+            return
+          }
+          audioSrc = URL.createObjectURL(blob)
+        } else if (pad.source === "proxy") {
+          audioSrc = getProxyUrl(pad.src.replace('proxy:', ''))
+        } else {
+          if (!pad.src) {
+            alert("Keine Quelle ausgewählt")
+            return
+          }
+          audioSrc = pad.src
+        }
+        
+        await freeChannel.play(
+          audioSrc,
+          (pad.volume ?? 1) * masterVol,
+          pad.fadeMs,
+          pad.id,
+          pad.startTime || 0,
+          pad.loop || false
+        )
+        
+        setActiveChannels(prev => {
+          const next = new Map(prev)
+          next.set(pad.id, freeChannel)
+          return next
+        })
+        
+        clearPadError(pad.id)
+      } catch (error: any) {
+        console.error('Playback-Fehler:', error)
+        updatePadError(pad.id, error.message || "Playback-Fehler")
+        alert("Fehler beim Abspielen: " + (error.message || "Unbekannter Fehler"))
+      }
+    } else {
+      // Single-Channel Mode (alle anderen stoppen)
+      await stopAllChannels()
+      
+      const channel = audioChannels[0]
+      
+      try {
+        let audioSrc = ""
+        
+        if (pad.source === "idb") {
+          const blob = await idbGet(idbKeyForPad(pad.id))
+          if (!blob) {
+            updatePadError(pad.id, "Lokale Datei nicht gefunden")
+            alert("Lokale Datei nicht gefunden. Bitte neu auswählen.")
+            return
+          }
+          audioSrc = URL.createObjectURL(blob)
+        } else if (pad.source === "proxy") {
+          audioSrc = getProxyUrl(pad.src.replace('proxy:', ''))
+        } else {
+          if (!pad.src) {
+            alert("Keine Quelle ausgewählt")
+            return
+          }
+          audioSrc = pad.src
+        }
+        
+        await channel.play(
+          audioSrc,
+          (pad.volume ?? 1) * masterVol,
+          pad.fadeMs,
+          pad.id,
+          pad.startTime || 0,
+          pad.loop || false
+        )
+        
+        setActiveChannels(new Map([[pad.id, channel]]))
+        clearPadError(pad.id)
+      } catch (error: any) {
+        console.error('Playback-Fehler:', error)
+        updatePadError(pad.id, error.message || "Playback-Fehler")
+        alert("Fehler beim Abspielen: " + (error.message || "Unbekannter Fehler"))
+      }
+    }
+  }
+
+  async function stopAllChannels() {
+    const promises = Array.from(activeChannels.values()).map(ch => 
+      ch.stop(1000)
+    )
+    await Promise.all(promises)
+    setActiveChannels(new Map())
+  }
+
+  async function clearLocal(p:Pad){
+    if(p.source !== "idb") return
+    await idbDel(idbKeyForPad(p.id))
+    setBanks(prev=>{
+      const copy = prev.map((b,i)=> i!==currentBankIdx? b : ({...b, pads: b.pads.map(x=> x.id===p.id ? ({...x, source:"url" as SourceType, src:"", filename:undefined, size:undefined}): x) }))
+      return copy
+    })
+    alert("Lokale Datei gelöscht.")
+  }
+
+  /* ---------- Bank-Tools ---------- */
+  function addBank(){ setBanks(prev=>[...prev, defaultBank(`Bank ${prev.length+1}`)]); setCurrentBankIdx(banks.length) }
+  function renameBank(newName: string){ setBanks(prev=> prev.map((b,i)=> i===currentBankIdx? ({...b, name:newName || `Bank ${i+1}`}): b)) }
+  function removeBank(){
+    if(banks.length<=1){ alert("Mindestens eine Bank muss vorhanden sein."); return }
+    if(!confirm(`Bank "${currentBank.name}" wirklich löschen?`)) return
+    const next = banks.filter((_,i)=>i!==currentBankIdx)
+    setBanks(next); setCurrentBankIdx(Math.max(0, currentBankIdx-1))
+  }
+  function addPads(n=6){ setBanks(prev => prev.map((b,i)=> i!==currentBankIdx? b : ({...b, pads: b.pads.concat(Array.from({length:n}, emptyPad)) }))) }
+  function resetPadsTo12(){
+    if(!confirm("Alle Pads dieser Bank zurücksetzen?")) return
+    setBanks(prev => prev.map((b,i)=> i!==currentBankIdx? b : ({...b, pads: Array.from({length:12}, emptyPad)})))
+    setActiveChannels(new Map())
+  }
+
+  /* ---------- Export / Import ---------- */
+  function exportConfig(){
+    const data = { version: LS_VERSION, banks, masterVol, currentBankIdx, hotkeysEnabled, midiEnabled, midiInputId, multiChannelEnabled }
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"}))
+    const a = document.createElement("a"); a.href=url; a.download="musicpad-config.json"; a.click(); URL.revokeObjectURL(url)
+  }
+  
+  function importConfigFromFile(e:React.ChangeEvent<HTMLInputElement>){
+    const f=e.target.files?.[0]; if(!f) return
+    const r=new FileReader()
+    r.onload=()=>{ try{
+      const d = JSON.parse(String(r.result))
+      if(!d || !Array.isArray(d.banks)) throw new Error("Ungültige Datei")
+      setBanks(d.banks)
+      if(typeof d.masterVol==="number") setMasterVol(d.masterVol)
+      if(typeof d.currentBankIdx==="number") setCurrentBankIdx(Math.min(Math.max(0,d.currentBankIdx), Math.max(0,(d.banks as Bank[]).length-1)))
+      if(typeof d.hotkeysEnabled==="boolean") setHotkeysEnabled(d.hotkeysEnabled)
+      if(typeof d.midiEnabled==="boolean") setMidiEnabled(d.midiEnabled)
+      if(typeof d.midiInputId==="string") setMidiInputId(d.midiInputId)
+      if(typeof d.multiChannelEnabled==="boolean") setMultiChannelEnabled(d.multiChannelEnabled)
+      alert("Konfiguration importiert (Dateien bleiben in IndexedDB).")
+    }catch{ alert("Ungültige Konfigurationsdatei.") } }
+    r.readAsText(f)
+  }
+
+  async function exportFullBackup() {
+    const zip = new JSZip()
+    const config = {
+      version: "musicpad-full-v2",
+      banks,
+      masterVol,
+      currentBankIdx,
+      hotkeysEnabled,
+      midiEnabled,
+      midiInputId,
+      multiChannelEnabled
+    }
+    zip.file("config.json", JSON.stringify(config, null, 2))
+
+    for (const bank of banks) {
+      for (const pad of bank.pads) {
+        if (pad.source === "idb") {
+          const blob = await idbGet(idbKeyForPad(pad.id))
+          if (blob) {
+            const base = (pad.title || pad.id).replace(/[\\/:*?"<>|]+/g,"_")
+            const ext = pad.filename?.split(".").pop()?.toLowerCase() || "webm"
+            zip.file(`banks/${bank.name}/${base}.${ext}`, blob)
+          }
+        }
+      }
+    }
+
+    const content = await zip.generateAsync({ type: "blob" })
+    saveAs(content, "musicpad-backup.zip")
+  }
+
+  async function analyzeBackupZip(file: File): Promise<RestoreAnalysis> {
+    const zip = await JSZip.loadAsync(file)
+    const entries: ZipEntryInfo[] = []
+    const banksSet = new Set<string>()
+    zip.forEach((p, zf) => {
+      if (!p.startsWith("banks/") || p.endsWith("/")) return
+      const segs = p.split("/")
+      const bankName = decodeURIComponent(segs[1] || "")
+      const fileName = decodeURIComponent(segs[2] || "")
+      if (!bankName || !fileName) return
+      const base = fileName.replace(/\.[^.]+$/,"")
+      const ext = (fileName.split(".").pop() || "").toLowerCase()
+      banksSet.add(bankName)
+      entries.push({
+        path: p, bankName, baseName: base, ext,
+        size: (zf as any)?._data?.uncompressedSize ?? 0
+      })
+    })
+    const perBankCounts: Record<string, number> = {}
+    for (const b of banksSet) perBankCounts[b] = entries.filter(e=>e.bankName===b).length
+    return { banks: Array.from(banksSet), entries, perBankCounts }
+  }
+
+  async function applyRestoreFromZip(file: File, opts: RestoreOptions) {
+    setRestoreBusy(true)
+    try {
+      const zip = await JSZip.loadAsync(file)
+
+      const cfgEntry = zip.file("config.json")
+      if (!cfgEntry) throw new Error("ZIP enthält keine config.json")
+      const cfgText = await cfgEntry.async("string")
+      const cfg = JSON.parse(cfgText)
+      if (!Array.isArray(cfg.banks)) throw new Error("Ungültige config.json (keine Banks)")
+
+      let resultBanks: Bank[] = JSON.parse(JSON.stringify(banks)) as Bank[]
+      const findBankByName = (name: string) => resultBanks.findIndex(b=>b.name===name)
+      const makePadTitle = (title: string, attempt: number) => attempt<=1 ? title : `${title} (${attempt})`
+
+      for (const srcBank of cfg.banks as Bank[]) {
+        const idx = findBankByName(srcBank.name)
+        if (idx < 0) {
+          if (opts.bankStrategy === "createMissing" || opts.bankStrategy === "mergeByName") {
+            resultBanks.push({ id: uid(), name: srcBank.name, pads: [] })
+          } else if (opts.bankStrategy === "replaceExisting") {
+            resultBanks.push({ id: uid(), name: srcBank.name, pads: [] })
+          }
+        } else {
+          if (opts.bankStrategy === "replaceExisting") {
+            resultBanks[idx].pads = []
+          }
+        }
+      }
+
+      const allFileEntries = zip.filter((p)=> p.startsWith("banks/") && !p.endsWith("/"))
+      function getOrCreateBankByName(bankName: string): Bank {
+        let i = findBankByName(bankName)
+        if (i < 0) {
+          const nb = { id: uid(), name: bankName, pads: [] as Pad[] }
+          resultBanks.push(nb)
+          i = resultBanks.length-1
+        }
+        return resultBanks[i]
+      }
+
+      for (const entry of allFileEntries) {
+        const path = entry.name
+        const segs = path.split("/")
+        const bankName = decodeURIComponent(segs[1] || "")
+        const fileName = decodeURIComponent(segs[2] || "")
+        if (!bankName || !fileName) continue
+
+        const base = fileName.replace(/\.[^.]+$/,"")
+        const ext = (fileName.split(".").pop() || "").toLowerCase()
+        const blob = await entry.async("blob")
+        const bank = getOrCreateBankByName(bankName)
+
+        let pad = bank.pads.find(p => (p.title||"") === base) || bank.pads.find(p => p.id === base)
+        if (!pad) {
+          const newPad: Pad = { 
+            id: uid(), 
+            title: base, 
+            src: "", 
+            source: "url", 
+            volume: 0.9, 
+            fadeMs: 1500,
+            startTime: 0,
+            loop: false
+          }
+          bank.pads.push(newPad)
+          pad = newPad
+        } else {
+          if (opts.padStrategy === "keepExisting") {
+            // Keep existing pad
+          } else if (opts.padStrategy === "duplicate") {
+            let attempt = 1
+            let dupTitle = makePadTitle(base, attempt)
+            while (bank.pads.some(p=> (p.title||"") === dupTitle)) {
+              attempt++
+              dupTitle = makePadTitle(base, attempt)
+            }
+            const dupPad: Pad = {
+              id: uid(), 
+              title: dupTitle, 
+              src: "", 
+              source: "url",
+              volume: pad.volume ?? 0.9, 
+              fadeMs: pad.fadeMs ?? 1500,
+              startTime: pad.startTime ?? 0,
+              loop: pad.loop ?? false
+            }
+            bank.pads.push(dupPad)
+            pad = dupPad
+          }
+        }
+
+        await idbPut(idbKeyForPad(pad.id), blob)
+        pad.source = "idb"
+        pad.src = "idb:"+pad.id
+        pad.filename = fileName
+        pad.size = blob.size
+      }
+
+      if (typeof cfg.masterVol === "number") setMasterVol(cfg.masterVol)
+      if (typeof cfg.currentBankIdx === "number") {
+        const idx = Math.min(Math.max(0, cfg.currentBankIdx), Math.max(0, resultBanks.length-1))
+        setCurrentBankIdx(idx)
+      }
+      if (typeof cfg.hotkeysEnabled === "boolean") setHotkeysEnabled(cfg.hotkeysEnabled)
+      if (typeof cfg.midiEnabled === "boolean") setMidiEnabled(cfg.midiEnabled)
+      if (typeof cfg.midiInputId === "string") setMidiInputId(cfg.midiInputId)
+      if (typeof cfg.multiChannelEnabled === "boolean") setMultiChannelEnabled(cfg.multiChannelEnabled)
+
+      setBanks(resultBanks)
+      alert("Backup erfolgreich wiederhergestellt.")
+      setRestoreOpen(false)
+      setRestoreFile(null)
+      setRestoreAnalysis(null)
+    } catch (e:any) {
+      console.error(e)
+      alert("Restore fehlgeschlagen: " + (e?.message || e))
+    } finally {
+      setRestoreBusy(false)
+    }
+  }
+
+  /* ---------- JSX Render ---------- */
+  return (
+    <div className="p-4 sm:p-6">
+      <header className="flex flex-wrap gap-3 items-center mb-4">
+        {/* Multi-Channel Indicator */}
+        {multiChannelEnabled && activeChannels.size > 0 && (
+          <div className="w-full bg-emerald-50 border border-emerald-200 rounded-lg p-2 mb-2">
+            <div className="flex items-center gap-2 text-emerald-700 text-sm">
+              <Layers size={16}/>
+              <span>{activeChannels.size} von 8 Kanälen aktiv</span>
+            </div>
+          </div>
+        )}
+        
+        <div className="flex items-center gap-2">
+          <button className="px-2 py-2 rounded-xl border" onClick={()=>setCurrentBankIdx(Math.max(0,currentBankIdx-1))} title="Vorherige Bank"><ChevronLeft size={16}/></button>
+
+          {renamingBank ? (
+            <input
+              autoFocus
+              className="border rounded-xl px-2 py-1"
+              value={bankNameDraft}
+              onChange={(e)=>setBankNameDraft(e.target.value)}
+              onBlur={()=>{ renameBank(bankNameDraft); setRenamingBank(false) }}
+              onKeyDown={(e)=>{ if(e.key==="Enter"){ renameBank(bankNameDraft); setRenamingBank(false) }}}
+            />
+          ) : (
+            <button className="text-lg font-semibold" onClick={()=>{ setBankNameDraft(currentBank.name); setRenamingBank(true) }} title="Bank umbenennen">
+              {currentBank.name}
+            </button>
+          )}
+
+          <button className="px-2 py-2 rounded-xl border" onClick={()=>setCurrentBankIdx(Math.min(banks.length-1,currentBankIdx+1))} title="Nächste Bank"><ChevronRight size={16}/></button>
+        </div>
+
+        <div className="flex-1" />
+
+        {canInstall && (
+          <button 
+            className="px-3 py-2 rounded-xl border flex items-center gap-2" 
+            onClick={handleInstallClick} 
+            title={installPromptEvt ? "Als App installieren" : "Installationsanweisungen anzeigen"}
+          >
+            <MonitorDown size={16}/>
+            {installPromptEvt ? "App installieren" : "Installieren"}
+          </button>
+        )}
+
+        <label className="flex items-center gap-2">
+          Master {Math.round(masterVol*100)}%
+          <input type="range" min={0} max={1} step={0.01} value={masterVol} onChange={e=>setMasterVol(parseFloat(e.target.value))}/>
+        </label>
+        
+        <label className="px-3 py-2 rounded-xl border flex items-center gap-2 cursor-pointer select-none" title="Multi-Channel: Mehrere Sounds gleichzeitig">
+          <Layers size={16}/>
+          <input type="checkbox" checked={multiChannelEnabled} onChange={e=>setMultiChannelEnabled(e.target.checked)}/>
+          Multi-Channel
+        </label>
+        
+        <button className="px-3 py-2 rounded-xl border" onClick={stopAllChannels}><Pause size={16}/> Stop All</button>
+
+        <button className="px-3 py-2 rounded-xl border" onClick={exportConfig} title="Konfig exportieren"><Download size={16}/> Export</button>
+        <label className="px-3 py-2 rounded-xl border cursor-pointer" title="Konfig importieren">
+          <Upload size={16}/> Import
+          <input type="file" accept="application/json" className="hidden" onChange={importConfigFromFile}/>
+        </label>
+
+        <button className="px-3 py-2 rounded-xl border" onClick={exportFullBackup} title="Backup inkl. Songs (ZIP)"><Download size={16}/> Full Backup</button>
+
+        <label className="px-3 py-2 rounded-xl border cursor-pointer" title="Backup (ZIP) wiederherstellen">
+          <Upload size={16}/> Full Restore
+          <input
+            type="file"
+            accept=".zip,application/zip"
+            className="hidden"
+            onChange={async (e) => {
+              const f = e.target.files?.[0]
+              if (!f) return
+              try {
+                const analysis = await analyzeBackupZip(f)
+                setRestoreFile(f)
+                setRestoreAnalysis(analysis)
+                setRestoreOpen(true)
+              } catch (err:any) {
+                console.error(err)
+                alert("Analyse fehlgeschlagen: "+(err?.message||err))
+              } finally {
+                e.currentTarget.value = ""
+              }
+            }}
+          />
+        </label>
+
+        <label className="px-3 py-2 rounded-xl border flex items-center gap-2 cursor-pointer select-none" title="Hotkeys: frei + 1–9/0, Leertaste = Stop">
+          <Keyboard size={16}/>
+          <input type="checkbox" checked={hotkeysEnabled} onChange={e=>setHotkeysEnabled(e.target.checked)}/>
+          Hotkeys
+        </label>
+
+        <div className="px-3 py-2 rounded-xl border flex items-center gap-2">
+          {midiEnabled ? <Plug size={16}/> : <Unplug size={16}/>}
+          <label className="flex items-center gap-2 select-none">
+            MIDI
+            <input type="checkbox" checked={midiEnabled} onChange={e=>setMidiEnabled(e.target.checked)}/>
+          </label>
+          <select
+            className="border rounded-xl px-2 py-1"
+            disabled={!midiEnabled || !midiInputs.length}
+            value={midiInputId || ""}
+            onChange={e=>setMidiInputId(e.target.value || undefined)}
+            title={midiInputs.length? "MIDI-Eingang wählen" : "Kein MIDI-Gerät gefunden"}
+          >
+            <option value="">{midiInputs.length? "Auto (erstes Gerät)" : "—"}</option>
+            {midiInputs.map(inp => <option key={inp.id} value={inp.id}>{inp.name}</option>)}
+          </select>
+        </div>
+      </header>
+
+      <div className="flex flex-wrap gap-2 mb-4">
+        <button className="px-3 py-2 rounded-xl border" onClick={addBank}>+ Bank hinzufügen</button>
+        <button className="px-3 py-2 rounded-xl border" onClick={removeBank} disabled={banks.length<=1}><Trash2 size={16}/> Bank löschen</button>
+        <button className="px-3 py-2 rounded-xl border" onClick={()=>addPads(6)}>+ 6 Pads</button>
+        <button className="px-3 py-2 rounded-xl border" onClick={resetPadsTo12}>Pads zurücksetzen (12)</button>
+      </div>
+
+      {/* Drag & Drop Grid */}
+      <DragDropContext onDragEnd={handleDragEnd}>
+        <Droppable droppableId="pads" direction="horizontal">
+          {(provided) => (
+            <main 
+              className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"
+              {...provided.droppableProps}
+              ref={provided.innerRef}
+            >
+              {currentBank.pads.map((pad, idx) => (
+                <Draggable key={pad.id} draggableId={pad.id} index={idx}>
+                  {(provided, snapshot) => (
+                    <div
+                      ref={provided.innerRef}
+                      {...provided.draggableProps}
+                      {...provided.dragHandleProps}
+                      style={{
+                        ...provided.draggableProps.style,
+                      }}
+                    >
+                      <PadButton
+                        index={idx}
+                        pad={pad}
+                        isActive={activeChannels.has(pad.id)}
+                        activeChannels={activeChannels.size}
+                        onPlay={() => playPad(pad)}
+                        onPause={() => playPad(pad)} // Toggle
+                        onEdit={() => setShowEdit({ bankIdx: currentBankIdx, pad })}
+                        isDragging={snapshot.isDragging}
+                      />
+                    </div>
+                  )}
+                </Draggable>
+              ))}
+              {provided.placeholder}
+            </main>
+          )}
+        </Droppable>
+      </DragDropContext>
+
+      {showEdit && (
+        <EditPadModal
+          pad={showEdit.pad}
+          onClose={()=>setShowEdit(null)}
+          onSave={(np)=>{ setBanks(prev=> prev.map((b,i)=> i!==showEdit.bankIdx? b : ({...b, pads: b.pads.map(p=> p.id===np.id? np : p)}))); setShowEdit(null) }}
+          onClearLocal={clearLocal}
+          onStartMidiLearn={(padId)=> setMidiLearningFor(prev => prev===padId ? null : padId)}
+          onTestUrl={testUrlForCors}
+          onTryProxy={tryProxyForPad}
+          midiLearningFor={midiLearningFor}
+          isTestingUrl={isTestingUrl}
+        />
+      )}
+
+      {restoreOpen && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+          <div className="bg-white p-5 rounded-2xl w-full max-w-2xl shadow-xl">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-semibold">Backup wiederherstellen</h3>
+              <button onClick={()=>{ if(!restoreBusy){ setRestoreOpen(false); setRestoreFile(null); setRestoreAnalysis(null) } }}>
+                <X size={18}/>
+              </button>
+            </div>
+
+            {!restoreAnalysis ? (
+              <div className="text-sm text-neutral-600">Keine Analyse-Daten gefunden.</div>
+            ) : (
+              <div className="space-y-4">
+                <div className="text-sm">
+                  <div className="font-medium mb-1">Im Backup gefunden:</div>
+                  <ul className="list-disc pl-5">
+                    {restoreAnalysis.banks.map(b => (
+                      <li key={b}>
+                        <span className="font-medium">{b}</span> – {restoreAnalysis.perBankCounts[b] ?? 0} Datei(en)
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div className="grid sm:grid-cols-2 gap-4">
+                  <div className="border rounded-xl p-3">
+                    <div className="font-medium mb-2">Banken-Strategie</div>
+                    <label className="flex items-center gap-2 mb-2">
+                      <input type="radio" name="bankStrategy"
+                        checked={restoreOpts.bankStrategy==="mergeByName"}
+                        onChange={()=>setRestoreOpts(o=>({...o, bankStrategy:"mergeByName"}))}
+                      />
+                      Zusammenführen nach Name (Standard)
+                    </label>
+                    <label className="flex items-center gap-2 mb-2">
+                      <input type="radio" name="bankStrategy"
+                        checked={restoreOpts.bankStrategy==="createMissing"}
+                        onChange={()=>setRestoreOpts(o=>({...o, bankStrategy:"createMissing"}))}
+                      />
+                      Fehlende Banken neu anlegen
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="radio" name="bankStrategy"
+                        checked={restoreOpts.bankStrategy==="replaceExisting"}
+                        onChange={()=>setRestoreOpts(o=>({...o, bankStrategy:"replaceExisting"}))}
+                      />
+                      Vorhandene Bank gleichen Namens <b>ersetzen</b>
+                    </label>
+                  </div>
+
+                  <div className="border rounded-xl p-3">
+                    <div className="font-medium mb-2">Pad-Konflikte (gleicher Titel/ID)</div>
+                    <label className="flex items-center gap-2 mb-2">
+                      <input type="radio" name="padStrategy"
+                        checked={restoreOpts.padStrategy==="overwrite"}
+                        onChange={()=>setRestoreOpts(o=>({...o, padStrategy:"overwrite"}))}
+                      />
+                      Überschreiben
+                    </label>
+                    <label className="flex items-center gap-2 mb-2">
+                      <input type="radio" name="padStrategy"
+                        checked={restoreOpts.padStrategy==="keepExisting"}
+                        onChange={()=>setRestoreOpts(o=>({...o, padStrategy:"keepExisting"}))}
+                      />
+                      Vorhandene behalten
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="radio" name="padStrategy"
+                        checked={restoreOpts.padStrategy==="duplicate"}
+                        onChange={()=>setRestoreOpts(o=>({...o, padStrategy:"duplicate"}))}
+                      />
+                      Duplizieren (Titel mit Suffix)
+                    </label>
+                  </div>
+                </div>
+
+                <div className="flex justify-end gap-2">
+                  <button className="px-3 py-2 rounded-xl border" disabled={restoreBusy}
+                    onClick={()=>{ setRestoreOpen(false); setRestoreFile(null); setRestoreAnalysis(null) }}>
+                    Abbrechen
+                  </button>
+                  <button className="px-3 py-2 rounded-xl bg-emerald-600 text-white disabled:opacity-60"
+                    onClick={()=> restoreFile && applyRestoreFromZip(restoreFile, restoreOpts)}
+                    disabled={restoreBusy || !restoreFile}
+                  >
+                    {restoreBusy ? "Wiederherstellen…" : "Wiederherstellen"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

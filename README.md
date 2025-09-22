@@ -29,3 +29,11 @@ Multi-Channel Audio Soundboard mit MIDI-Support und Drag & Drop.
 - Drag & Drop
 - Backup/Restore System
 - Port: 5173
+
+---
+
+## Copyright
+
+© 2025 Sissy Hägele. Alle Rechte vorbehalten.
+
+Diese Software wurde entwickelt für den Einsatz bei Reitturnieren.

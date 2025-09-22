@@ -1,3 +1,8 @@
+/**
+ * Soundboard Turnier-App
+ * Copyright (c) 2025 Sissy Hägele
+ * Alle Rechte vorbehalten / All rights reserved
+ */
 import React, { useEffect, useRef, useState, useCallback } from "react"
 import {
   Play, Pause, Settings, X, Download, Upload, ChevronLeft, ChevronRight,
@@ -8,7 +13,7 @@ import JSZip from "jszip"
 import { saveAs } from "file-saver"
 import { DragDropContext, Droppable, Draggable, DropResult } from 'react-beautiful-dnd'
 
-// Globaler Audio Context für bessere Autoplay-Kompatibilität
+// Globaler Audio Context fÃ¼r bessere Autoplay-KompatibilitÃ¤t
 let globalAudioContext: AudioContext | null = null;
 
 // Audio Context initialisieren
@@ -23,7 +28,7 @@ const getAudioContext = () => {
 function timeStringToSeconds(timeStr: string): number {
   if (!timeStr) return 0;
   
-  // Unterstützt Formate: "90" (90 Sekunden), "1:30" (1:30), "1:30.5" (1:30.5)
+  // UnterstÃ¼tzt Formate: "90" (90 Sekunden), "1:30" (1:30), "1:30.5" (1:30.5)
   const parts = timeStr.split(':');
   if (parts.length === 1) {
     return parseFloat(parts[0]) || 0;
@@ -242,7 +247,7 @@ async function testAudioUrl(url: string): Promise<{success: boolean, error?: str
     audio.onerror = () => {
       clearTimeout(timeout)
       audio.src = ''
-      const errorMsg = audio.error?.code === 4 ? 'CORS-Fehler oder nicht unterstütztes Format' : 'Ladefehler'
+      const errorMsg = audio.error?.code === 4 ? 'CORS-Fehler oder nicht unterstÃ¼tztes Format' : 'Ladefehler'
       resolve({ success: false, error: errorMsg })
     }
 
@@ -353,7 +358,7 @@ function PadButton(p:{
             </span>
           )}
           {p.pad.source === "proxy" && (
-            <span title="Über Proxy geladen">
+            <span title="Ãœber Proxy geladen">
               <Globe size={16} className="text-blue-500" />
             </span>
           )}
@@ -399,7 +404,7 @@ function PadButton(p:{
       
       {p.pad.lastError && (
         <div className="mt-1 text-xs text-red-500 truncate" title={p.pad.lastError}>
-          ⚠ {p.pad.lastError}
+          âš  {p.pad.lastError}
         </div>
       )}
       
@@ -448,7 +453,7 @@ function EditPadModal(props:{
           <div className="flex gap-2">
             <input
               className="border p-2 rounded-xl flex-1"
-              placeholder="https://… (mp3/wav/m4a)"
+              placeholder="https://â€¦ (mp3/wav/m4a)"
               value={pState.source === "url" ? pState.src : pState.source === "proxy" ? pState.src.replace('proxy:', '') : ""}
               onChange={e=>{
                 const url = e.target.value.trim()
@@ -482,20 +487,20 @@ function EditPadModal(props:{
                 <span className="font-medium">CORS-Problem erkannt</span>
               </div>
               <p className="text-orange-600 text-xs mb-2">
-                Diese URL kann aufgrund von CORS-Beschränkungen nicht direkt geladen werden.
+                Diese URL kann aufgrund von CORS-BeschrÃ¤nkungen nicht direkt geladen werden.
               </p>
               <button 
                 className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs flex items-center gap-1"
                 onClick={() => onTryProxy(pState)}
               >
                 <Globe size={12}/>
-                Über Proxy versuchen
+                Ãœber Proxy versuchen
               </button>
             </div>
           )}
 
           <span className="text-xs text-neutral-500">
-            Hinweis: Manche URLs sind durch CORS geschützt. Verwende den Test-Button oder lade die Datei lokal hoch.
+            Hinweis: Manche URLs sind durch CORS geschÃ¼tzt. Verwende den Test-Button oder lade die Datei lokal hoch.
           </span>
         </div>
 
@@ -507,7 +512,7 @@ function EditPadModal(props:{
             onChange={async e=>{
               const f = e.target.files?.[0]
               if(!f) return
-              if(!(f.type||"").startsWith("audio/")){ alert("Bitte mp3/wav/m4a wählen."); return }
+              if(!(f.type||"").startsWith("audio/")){ alert("Bitte mp3/wav/m4a wÃ¤hlen."); return }
               try {
                 await idbPut(idbKeyForPad(pState.id), f)
                 setP({
@@ -531,13 +536,13 @@ function EditPadModal(props:{
               <span>
                 Gespeichert: {pState.filename || "unbekannt"}{pState.size ? ` (${Math.round(pState.size/1024)} KB)` : ""}
               </span>
-              <button className="px-2 py-1 rounded border" onClick={()=>onClearLocal(pState)}>Lokal löschen</button>
+              <button className="px-2 py-1 rounded border" onClick={()=>onClearLocal(pState)}>Lokal lÃ¶schen</button>
             </div>
           )}
         </div>
 
         <label className="grid gap-1 mb-3">
-          <span className="text-sm">Pad-Lautstärke: {Math.round((pState.volume??0.9)*100)}%</span>
+          <span className="text-sm">Pad-LautstÃ¤rke: {Math.round((pState.volume??0.9)*100)}%</span>
           <input type="range" min={0} max={1} step={0.01} value={pState.volume} onChange={e=>setP({...pState,volume:parseFloat(e.target.value)})}/>
         </label>
         
@@ -584,7 +589,7 @@ function EditPadModal(props:{
             </button>
           </div>
           <span className="text-xs text-neutral-600 mt-1">
-            Format: MM:SS.S (z.B. 1:30.5 für 1 Minute 30.5 Sekunden) oder Sekunden (z.B. 90.5)
+            Format: MM:SS.S (z.B. 1:30.5 fÃ¼r 1 Minute 30.5 Sekunden) oder Sekunden (z.B. 90.5)
           </span>
         </div>
 
@@ -611,7 +616,7 @@ function EditPadModal(props:{
             value={pState.hotkey || ""}
             onChange={e=>setP({...pState, hotkey: e.target.value.trim() || undefined})}
           />
-          <span className="text-xs text-neutral-500">Hotkeys gelten global; Kollisionen möglich.</span>
+          <span className="text-xs text-neutral-500">Hotkeys gelten global; Kollisionen mÃ¶glich.</span>
         </div>
 
         <div className="grid gap-1 mb-3">
@@ -620,10 +625,10 @@ function EditPadModal(props:{
             <button
               className={"px-3 py-1.5 rounded-xl border flex items-center gap-2 " + (midiLearningFor===pState.id ? "bg-emerald-600 text-white" : "")}
               onClick={()=>onStartMidiLearn(pState.id)}
-              title="MIDI-Learn starten: Taste/Pad drücken"
+              title="MIDI-Learn starten: Taste/Pad drÃ¼cken"
             >
               <Music2 size={16}/>
-              {midiLearningFor===pState.id ? "MIDI-Learn aktiv… drücke Note" : "MIDI-Learn"}
+              {midiLearningFor===pState.id ? "MIDI-Learn aktivâ€¦ drÃ¼cke Note" : "MIDI-Learn"}
             </button>
             {typeof pState.midiNote==="number" && (
               <span className="text-neutral-600">
@@ -634,7 +639,7 @@ function EditPadModal(props:{
               <button className="px-2 py-1 rounded border" onClick={()=>setP({...pState, midiNote: undefined, midiChannel: undefined})}>Clear</button>
             )}
           </div>
-          <span className="text-xs text-neutral-500">Beim Lernen wird die nächste empfangene Note gespeichert.</span>
+          <span className="text-xs text-neutral-500">Beim Lernen wird die nÃ¤chste empfangene Note gespeichert.</span>
         </div>
 
         <div className="flex justify-end gap-2 mt-4">
@@ -718,7 +723,7 @@ export default function App(){
     try {
       localStorage.setItem(LS_MASTER, String(masterVol))
     } catch (error) {
-      console.warn('Fehler beim Speichern der Master-Lautstärke:', error)
+      console.warn('Fehler beim Speichern der Master-LautstÃ¤rke:', error)
     }
   },[masterVol])
   
@@ -803,7 +808,7 @@ export default function App(){
     registerServiceWorker()
 
     if (!isPWASupported()) {
-      console.log('PWA nicht unterstützt - HTTPS erforderlich oder unsicherer Context')
+      console.log('PWA nicht unterstÃ¼tzt - HTTPS erforderlich oder unsicherer Context')
       return
     }
 
@@ -847,11 +852,11 @@ export default function App(){
                       window.location.hostname === 'localhost'
       
       if (!isSecure) {
-        alert('App-Installation nur über HTTPS möglich. In der Production-Umgebung verfügbar.')
+        alert('App-Installation nur Ã¼ber HTTPS mÃ¶glich. In der Production-Umgebung verfÃ¼gbar.')
         return
       }
       
-      alert(`Um diese App zu installieren:\n\nChrome/Edge: Menü → "App installieren"\nFirefox: Adressleiste → Plus-Symbol\nSafari: Teilen → "Zum Home-Bildschirm"`)
+      alert(`Um diese App zu installieren:\n\nChrome/Edge: MenÃ¼ â†’ "App installieren"\nFirefox: Adressleiste â†’ Plus-Symbol\nSafari: Teilen â†’ "Zum Home-Bildschirm"`)
       return
     }
     
@@ -867,7 +872,7 @@ export default function App(){
     }
   }
 
-  /* ---------- Live-Volume für aktive Channels ---------- */
+  /* ---------- Live-Volume fÃ¼r aktive Channels ---------- */
   useEffect(()=>{
     activeChannels.forEach((channel, padId) => {
       const pad = currentBank.pads.find(p => p.id === padId)
@@ -906,13 +911,13 @@ export default function App(){
     setIsTestingUrl(true)
     try {
       if (!isValidAudioUrl(url)) {
-        alert("URL scheint keine Audio-Datei zu sein. Unterstützte Formate: mp3, wav, m4a, ogg, aac")
+        alert("URL scheint keine Audio-Datei zu sein. UnterstÃ¼tzte Formate: mp3, wav, m4a, ogg, aac")
         return
       }
       
       const result = await testAudioUrl(url)
       if (result.success) {
-        alert("✅ URL ist erreichbar und sollte funktionieren!")
+        alert("âœ… URL ist erreichbar und sollte funktionieren!")
         if (showEdit) {
           setShowEdit(prev => prev ? {
             ...prev,
@@ -920,10 +925,10 @@ export default function App(){
           } : null)
         }
       } else {
-        alert(`❌ Problem mit URL: ${result.error}\n\nTipp: Versuche einen Proxy oder lade die Datei lokal hoch.`)
+        alert(`âŒ Problem mit URL: ${result.error}\n\nTipp: Versuche einen Proxy oder lade die Datei lokal hoch.`)
       }
     } catch (error) {
-      alert("Test fehlgeschlagen. Prüfe die URL und versuche es erneut.")
+      alert("Test fehlgeschlagen. PrÃ¼fe die URL und versuche es erneut.")
     } finally {
       setIsTestingUrl(false)
     }
@@ -951,11 +956,11 @@ export default function App(){
         if (showEdit) {
           setShowEdit(prev => prev ? { ...prev, pad: updatedPad } : null)
         }
-        alert(`✅ Proxy ${i + 1} funktioniert! Pad wurde aktualisiert.`)
+        alert(`âœ… Proxy ${i + 1} funktioniert! Pad wurde aktualisiert.`)
         return
       }
     }
-    alert("❌ Keiner der verfügbaren Proxies kann diese URL laden. Versuche eine andere URL oder lade die Datei lokal hoch.")
+    alert("âŒ Keiner der verfÃ¼gbaren Proxies kann diese URL laden. Versuche eine andere URL oder lade die Datei lokal hoch.")
   }
 
   /* ---------- Drag & Drop Handler ---------- */
@@ -1020,7 +1025,7 @@ export default function App(){
     }
     
     if(!navigator.requestMIDIAccess){ 
-      console.warn("WebMIDI nicht verfügbar (Chrome/Edge erforderlich)")
+      console.warn("WebMIDI nicht verfÃ¼gbar (Chrome/Edge erforderlich)")
       return 
     }
     
@@ -1124,7 +1129,7 @@ export default function App(){
       // Multi-Channel Mode
       const existingChannel = activeChannels.get(pad.id)
       if (existingChannel) {
-        // Pad läuft bereits, stoppe es
+        // Pad lÃ¤uft bereits, stoppe es
         await existingChannel.stop(pad.fadeMs)
         setActiveChannels(prev => {
           const next = new Map(prev)
@@ -1137,7 +1142,7 @@ export default function App(){
       // Finde freien Kanal
       const freeChannel = audioChannels.find(ch => !ch.padId)
       if (!freeChannel) {
-        alert('Alle 8 Audio-Kanäle sind belegt!')
+        alert('Alle 8 Audio-KanÃ¤le sind belegt!')
         return
       }
       
@@ -1148,7 +1153,7 @@ export default function App(){
           const blob = await idbGet(idbKeyForPad(pad.id))
           if (!blob) {
             updatePadError(pad.id, "Lokale Datei nicht gefunden")
-            alert("Lokale Datei nicht gefunden. Bitte neu auswählen.")
+            alert("Lokale Datei nicht gefunden. Bitte neu auswÃ¤hlen.")
             return
           }
           audioSrc = URL.createObjectURL(blob)
@@ -1156,7 +1161,7 @@ export default function App(){
           audioSrc = getProxyUrl(pad.src.replace('proxy:', ''))
         } else {
           if (!pad.src) {
-            alert("Keine Quelle ausgewählt")
+            alert("Keine Quelle ausgewÃ¤hlt")
             return
           }
           audioSrc = pad.src
@@ -1196,7 +1201,7 @@ export default function App(){
           const blob = await idbGet(idbKeyForPad(pad.id))
           if (!blob) {
             updatePadError(pad.id, "Lokale Datei nicht gefunden")
-            alert("Lokale Datei nicht gefunden. Bitte neu auswählen.")
+            alert("Lokale Datei nicht gefunden. Bitte neu auswÃ¤hlen.")
             return
           }
           audioSrc = URL.createObjectURL(blob)
@@ -1204,7 +1209,7 @@ export default function App(){
           audioSrc = getProxyUrl(pad.src.replace('proxy:', ''))
         } else {
           if (!pad.src) {
-            alert("Keine Quelle ausgewählt")
+            alert("Keine Quelle ausgewÃ¤hlt")
             return
           }
           audioSrc = pad.src
@@ -1244,7 +1249,7 @@ export default function App(){
       const copy = prev.map((b,i)=> i!==currentBankIdx? b : ({...b, pads: b.pads.map(x=> x.id===p.id ? ({...x, source:"url" as SourceType, src:"", filename:undefined, size:undefined}): x) }))
       return copy
     })
-    alert("Lokale Datei gelöscht.")
+    alert("Lokale Datei gelÃ¶scht.")
   }
 
   /* ---------- Bank-Tools ---------- */
@@ -1252,13 +1257,13 @@ export default function App(){
   function renameBank(newName: string){ setBanks(prev=> prev.map((b,i)=> i===currentBankIdx? ({...b, name:newName || `Bank ${i+1}`}): b)) }
   function removeBank(){
     if(banks.length<=1){ alert("Mindestens eine Bank muss vorhanden sein."); return }
-    if(!confirm(`Bank "${currentBank.name}" wirklich löschen?`)) return
+    if(!confirm(`Bank "${currentBank.name}" wirklich lÃ¶schen?`)) return
     const next = banks.filter((_,i)=>i!==currentBankIdx)
     setBanks(next); setCurrentBankIdx(Math.max(0, currentBankIdx-1))
   }
   function addPads(n=6){ setBanks(prev => prev.map((b,i)=> i!==currentBankIdx? b : ({...b, pads: b.pads.concat(Array.from({length:n}, emptyPad)) }))) }
   function resetPadsTo12(){
-    if(!confirm("Alle Pads dieser Bank zurücksetzen?")) return
+    if(!confirm("Alle Pads dieser Bank zurÃ¼cksetzen?")) return
     setBanks(prev => prev.map((b,i)=> i!==currentBankIdx? b : ({...b, pads: Array.from({length:12}, emptyPad)})))
     setActiveChannels(new Map())
   }
@@ -1275,7 +1280,7 @@ export default function App(){
     const r=new FileReader()
     r.onload=()=>{ try{
       const d = JSON.parse(String(r.result))
-      if(!d || !Array.isArray(d.banks)) throw new Error("Ungültige Datei")
+      if(!d || !Array.isArray(d.banks)) throw new Error("UngÃ¼ltige Datei")
       setBanks(d.banks)
       if(typeof d.masterVol==="number") setMasterVol(d.masterVol)
       if(typeof d.currentBankIdx==="number") setCurrentBankIdx(Math.min(Math.max(0,d.currentBankIdx), Math.max(0,(d.banks as Bank[]).length-1)))
@@ -1284,7 +1289,7 @@ export default function App(){
       if(typeof d.midiInputId==="string") setMidiInputId(d.midiInputId)
       if(typeof d.multiChannelEnabled==="boolean") setMultiChannelEnabled(d.multiChannelEnabled)
       alert("Konfiguration importiert (Dateien bleiben in IndexedDB).")
-    }catch{ alert("Ungültige Konfigurationsdatei.") } }
+    }catch{ alert("UngÃ¼ltige Konfigurationsdatei.") } }
     r.readAsText(f)
   }
 
@@ -1348,10 +1353,10 @@ export default function App(){
       const zip = await JSZip.loadAsync(file)
 
       const cfgEntry = zip.file("config.json")
-      if (!cfgEntry) throw new Error("ZIP enthält keine config.json")
+      if (!cfgEntry) throw new Error("ZIP enthÃ¤lt keine config.json")
       const cfgText = await cfgEntry.async("string")
       const cfg = JSON.parse(cfgText)
-      if (!Array.isArray(cfg.banks)) throw new Error("Ungültige config.json (keine Banks)")
+      if (!Array.isArray(cfg.banks)) throw new Error("UngÃ¼ltige config.json (keine Banks)")
 
       let resultBanks: Bank[] = JSON.parse(JSON.stringify(banks)) as Bank[]
       const findBankByName = (name: string) => resultBanks.findIndex(b=>b.name===name)
@@ -1473,7 +1478,7 @@ export default function App(){
           <div className="w-full bg-emerald-50 border border-emerald-200 rounded-lg p-2 mb-2">
             <div className="flex items-center gap-2 text-emerald-700 text-sm">
               <Layers size={16}/>
-              <span>{activeChannels.size} von 8 Kanälen aktiv</span>
+              <span>{activeChannels.size} von 8 KanÃ¤len aktiv</span>
             </div>
           </div>
         )}
@@ -1496,7 +1501,7 @@ export default function App(){
             </button>
           )}
 
-          <button className="px-2 py-2 rounded-xl border" onClick={()=>setCurrentBankIdx(Math.min(banks.length-1,currentBankIdx+1))} title="Nächste Bank"><ChevronRight size={16}/></button>
+          <button className="px-2 py-2 rounded-xl border" onClick={()=>setCurrentBankIdx(Math.min(banks.length-1,currentBankIdx+1))} title="NÃ¤chste Bank"><ChevronRight size={16}/></button>
         </div>
 
         <div className="flex-1" />
@@ -1557,7 +1562,7 @@ export default function App(){
           />
         </label>
 
-        <label className="px-3 py-2 rounded-xl border flex items-center gap-2 cursor-pointer select-none" title="Hotkeys: frei + 1–9/0, Leertaste = Stop">
+        <label className="px-3 py-2 rounded-xl border flex items-center gap-2 cursor-pointer select-none" title="Hotkeys: frei + 1â€“9/0, Leertaste = Stop">
           <Keyboard size={16}/>
           <input type="checkbox" checked={hotkeysEnabled} onChange={e=>setHotkeysEnabled(e.target.checked)}/>
           Hotkeys
@@ -1574,19 +1579,19 @@ export default function App(){
             disabled={!midiEnabled || !midiInputs.length}
             value={midiInputId || ""}
             onChange={e=>setMidiInputId(e.target.value || undefined)}
-            title={midiInputs.length? "MIDI-Eingang wählen" : "Kein MIDI-Gerät gefunden"}
+            title={midiInputs.length? "MIDI-Eingang wÃ¤hlen" : "Kein MIDI-GerÃ¤t gefunden"}
           >
-            <option value="">{midiInputs.length? "Auto (erstes Gerät)" : "—"}</option>
+            <option value="">{midiInputs.length? "Auto (erstes GerÃ¤t)" : "â€”"}</option>
             {midiInputs.map(inp => <option key={inp.id} value={inp.id}>{inp.name}</option>)}
           </select>
         </div>
       </header>
 
       <div className="flex flex-wrap gap-2 mb-4">
-        <button className="px-3 py-2 rounded-xl border" onClick={addBank}>+ Bank hinzufügen</button>
-        <button className="px-3 py-2 rounded-xl border" onClick={removeBank} disabled={banks.length<=1}><Trash2 size={16}/> Bank löschen</button>
+        <button className="px-3 py-2 rounded-xl border" onClick={addBank}>+ Bank hinzufÃ¼gen</button>
+        <button className="px-3 py-2 rounded-xl border" onClick={removeBank} disabled={banks.length<=1}><Trash2 size={16}/> Bank lÃ¶schen</button>
         <button className="px-3 py-2 rounded-xl border" onClick={()=>addPads(6)}>+ 6 Pads</button>
-        <button className="px-3 py-2 rounded-xl border" onClick={resetPadsTo12}>Pads zurücksetzen (12)</button>
+        <button className="px-3 py-2 rounded-xl border" onClick={resetPadsTo12}>Pads zurÃ¼cksetzen (12)</button>
       </div>
 
       {/* Drag & Drop Grid */}
@@ -1672,7 +1677,7 @@ export default function App(){
                   <ul className="list-disc pl-5">
                     {restoreAnalysis.banks.map(b => (
                       <li key={b}>
-                        <span className="font-medium">{b}</span> – {restoreAnalysis.perBankCounts[b] ?? 0} Datei(en)
+                        <span className="font-medium">{b}</span> â€“ {restoreAnalysis.perBankCounts[b] ?? 0} Datei(en)
                       </li>
                     ))}
                   </ul>
@@ -1686,7 +1691,7 @@ export default function App(){
                         checked={restoreOpts.bankStrategy==="mergeByName"}
                         onChange={()=>setRestoreOpts(o=>({...o, bankStrategy:"mergeByName"}))}
                       />
-                      Zusammenführen nach Name (Standard)
+                      ZusammenfÃ¼hren nach Name (Standard)
                     </label>
                     <label className="flex items-center gap-2 mb-2">
                       <input type="radio" name="bankStrategy"
@@ -1711,7 +1716,7 @@ export default function App(){
                         checked={restoreOpts.padStrategy==="overwrite"}
                         onChange={()=>setRestoreOpts(o=>({...o, padStrategy:"overwrite"}))}
                       />
-                      Überschreiben
+                      Ãœberschreiben
                     </label>
                     <label className="flex items-center gap-2 mb-2">
                       <input type="radio" name="padStrategy"
@@ -1739,7 +1744,7 @@ export default function App(){
                     onClick={()=> restoreFile && applyRestoreFromZip(restoreFile, restoreOpts)}
                     disabled={restoreBusy || !restoreFile}
                   >
-                    {restoreBusy ? "Wiederherstellen…" : "Wiederherstellen"}
+                    {restoreBusy ? "Wiederherstellenâ€¦" : "Wiederherstellen"}
                   </button>
                 </div>
               </div>

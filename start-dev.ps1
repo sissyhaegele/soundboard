@@ -1,13 +1,13 @@
 # Soundboard Dev Server mit Port-Management
 param(
-    [int]$Port = 4174
+    [int]$Port = 5173
 )
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Soundboard Dev Server - Port $Port" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-# Prüfe ob Port belegt ist
+# PrÃ¼fe ob Port belegt ist
 $connection = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue
 
 if ($connection) {

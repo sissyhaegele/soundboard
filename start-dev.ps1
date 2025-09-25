@@ -1,48 +1,62 @@
-# Soundboard Dev Server mit Port-Management
-param(
-    [int]$Port = 5173
-)
+# MusicPad Soundboard - Force Development Start
+# This script corresponds to the "dev:force" command in package.json
 
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "Soundboard Dev Server - Port $Port" -ForegroundColor Cyan
+Write-Host "  MUSICPAD SOUNDBOARD - FORCE START" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
 
-# PrÃ¼fe ob Port belegt ist
-$connection = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue
+$projectPath = "C:\Projekte\soundboard"
 
-if ($connection) {
-    Write-Host "`nPort $Port ist belegt!" -ForegroundColor Yellow
-    
-    # Finde den Prozess
-    $process = Get-Process -Id $connection.OwningProcess -ErrorAction SilentlyContinue
-    
-    if ($process) {
-        Write-Host "Prozess gefunden: $($process.Name) (PID: $($process.Id))" -ForegroundColor Yellow
-        
-        # Nur Node/Vite Prozesse automatisch beenden
-        if ($process.Name -match "node|vite") {
-            Write-Host "Beende alten Node/Vite Prozess..." -ForegroundColor Red
-            Stop-Process -Id $process.Id -Force
-            Start-Sleep -Seconds 2
-            Write-Host "Prozess beendet" -ForegroundColor Green
-        } else {
-            Write-Host "Prozess ist kein Node/Vite: $($process.Name)" -ForegroundColor Red
-            Write-Host "Manuelles Beenden erforderlich oder anderen Port verwenden" -ForegroundColor Yellow
-            
-            $response = Read-Host "Trotzdem beenden? (j/n)"
-            if ($response -eq 'j') {
-                Stop-Process -Id $process.Id -Force
-                Write-Host "Prozess beendet" -ForegroundColor Green
-            } else {
-                Write-Host "Abgebrochen - Port $Port bleibt belegt" -ForegroundColor Red
-                exit 1
-            }
+# Change to project directory
+Set-Location -Path $projectPath -ErrorAction Stop
+
+# Kill any process using port 5173
+Write-Host "[INFO] Checking for processes on port 5173..." -ForegroundColor Yellow
+$processOnPort = Get-NetTCPConnection -LocalPort 5173 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique
+
+if ($processOnPort) {
+    Write-Host "[INFO] Found process using port 5173, terminating..." -ForegroundColor Yellow
+    foreach ($pid in $processOnPort) {
+        $process = Get-Process -Id $pid -ErrorAction SilentlyContinue
+        if ($process) {
+            Write-Host "  - Stopping: $($process.Name) (PID: $pid)" -ForegroundColor Gray
+            Stop-Process -Id $pid -Force
         }
+    }
+    Start-Sleep -Seconds 2
+    Write-Host "[OK] Port 5173 is now free!" -ForegroundColor Green
+} else {
+    Write-Host "[OK] Port 5173 is available" -ForegroundColor Green
+}
+
+Write-Host ""
+
+# Check for node_modules
+if (!(Test-Path "node_modules")) {
+    Write-Host "[INFO] Installing dependencies..." -ForegroundColor Yellow
+    yarn install
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[ERROR] Failed to install dependencies!" -ForegroundColor Red
+        Read-Host "Press Enter to exit"
+        exit 1
     }
 }
 
-Write-Host "`nPort $Port ist frei" -ForegroundColor Green
-Write-Host "Starte Server..." -ForegroundColor Cyan
+# Clear Vite cache if it exists
+if (Test-Path "node_modules\.vite") {
+    Write-Host "[INFO] Clearing Vite cache..." -ForegroundColor Yellow
+    Remove-Item -Path "node_modules\.vite" -Recurse -Force
+}
 
-# Server starten
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "  Starting MusicPad Soundboard..." -ForegroundColor Green
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "PWA will be available at:" -ForegroundColor White
+Write-Host "  http://localhost:5173" -ForegroundColor Cyan
+Write-Host ""
+
+# Start Vite dev server
 yarn dev

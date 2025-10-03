@@ -45,3 +45,11 @@ public/sw.js
 
 # Logs
 logs/
+
+# Audio Files / Banks
+banks und App/
+*.mp3
+*.wav
+*.m4a
+*.ogg
+*.aac

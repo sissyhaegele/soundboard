@@ -1595,125 +1595,162 @@ async function playPad(pad: Pad) {
   return (
     <div className="p-4 sm:p-6">
       <header className="flex flex-wrap gap-3 items-center mb-4">
-        {/* Multi-Channel Indicator */}
-        {multiChannelEnabled && activeChannels.size > 0 && (
-          <div className="w-full bg-emerald-50 border border-emerald-200 rounded-lg p-2 mb-2">
-            <div className="flex items-center gap-2 text-emerald-700 text-sm">
-              <Layers size={16}/>
-              <span>{activeChannels.size} von 8 Kanälen aktiv</span>
-            </div>
-          </div>
-        )}
-        
-        <div className="flex items-center gap-2">
-          <button className="px-2 py-2 rounded-xl border" onClick={()=>setCurrentBankIdx(Math.max(0,currentBankIdx-1))} title="Vorherige Bank"><ChevronLeft size={16}/></button>
+  {/* Multi-Channel Indicator */}
+  {multiChannelEnabled && activeChannels.size > 0 && (
+    <div className="w-full bg-emerald-50 border border-emerald-200 rounded-lg p-2 mb-2">
+      <div className="flex items-center gap-2 text-emerald-700 text-sm">
+        <Layers size={16}/>
+        <span>{activeChannels.size} von 8 Kanälen aktiv</span>
+      </div>
+    </div>
+  )}
+  
+  {/* Bank Navigation */}
+  <div className="flex items-center gap-2">
+    <button className="px-2 py-2 rounded-xl border" onClick={()=>setCurrentBankIdx(Math.max(0,currentBankIdx-1))} title="Vorherige Bank">
+      <ChevronLeft size={16}/>
+    </button>
 
-          {renamingBank ? (
-            <input
-              autoFocus
-              className="border rounded-xl px-2 py-1"
-              value={bankNameDraft}
-              onChange={(e)=>setBankNameDraft(e.target.value)}
-              onBlur={()=>{ renameBank(bankNameDraft); setRenamingBank(false) }}
-              onKeyDown={(e)=>{ if(e.key==="Enter"){ renameBank(bankNameDraft); setRenamingBank(false) }}}
-            />
-          ) : (
-            <button className="text-lg font-semibold" onClick={()=>{ setBankNameDraft(currentBank.name); setRenamingBank(true) }} title="Bank umbenennen">
-              {currentBank.name}
-            </button>
-          )}
+    {renamingBank ? (
+      <input
+        autoFocus
+        className="border rounded-xl px-2 py-1"
+        value={bankNameDraft}
+        onChange={(e)=>setBankNameDraft(e.target.value)}
+        onBlur={()=>{ renameBank(bankNameDraft); setRenamingBank(false) }}
+        onKeyDown={(e)=>{ if(e.key==="Enter"){ renameBank(bankNameDraft); setRenamingBank(false) }}}
+      />
+    ) : (
+      <button className="text-lg font-semibold" onClick={()=>{ setBankNameDraft(currentBank.name); setRenamingBank(true) }} title="Bank umbenennen">
+        {currentBank.name}
+      </button>
+    )}
 
-          <button className="px-2 py-2 rounded-xl border" onClick={()=>setCurrentBankIdx(Math.min(banks.length-1,currentBankIdx+1))} title="NÃ¤chste Bank"><ChevronRight size={16}/></button>
-        </div>
+    <button className="px-2 py-2 rounded-xl border" onClick={()=>setCurrentBankIdx(Math.min(banks.length-1,currentBankIdx+1))} title="Nächste Bank">
+      <ChevronRight size={16}/>
+    </button>
+  </div>
 
-        <div className="flex-1" />
+  <div className="flex-1" />
 
-        {canInstall && (
-          <button 
-            className="px-3 py-2 rounded-xl border flex items-center gap-2" 
-            onClick={handleInstallClick} 
-            title={installPromptEvt ? "Als App installieren" : "Installationsanweisungen anzeigen"}
-          >
-            <MonitorDown size={16}/>
-            {installPromptEvt ? "App installieren" : "Installieren"}
-          </button>
-        )}
+  {/* PWA Install */}
+  {canInstall && (
+    <button 
+      className="px-3 py-2 rounded-xl border flex items-center gap-2" 
+      onClick={handleInstallClick} 
+      title={installPromptEvt ? "Als App installieren" : "Installationsanweisungen anzeigen"}
+    >
+      <MonitorDown size={16}/>
+      <span className="hidden sm:inline">{installPromptEvt ? "App installieren" : "Installieren"}</span>
+      <MonitorDown size={16} className="sm:hidden"/>
+    </button>
+  )}
 
-        <label className="flex items-center gap-2">
-          Master {Math.round(masterVol*100)}%
-          <input type="range" min={0} max={1} step={0.01} value={masterVol} onChange={e=>setMasterVol(parseFloat(e.target.value))}/>
-        </label>
-        
-        <label className="px-3 py-2 rounded-xl border flex items-center gap-2 cursor-pointer select-none" title="Multi-Channel: Mehrere Sounds gleichzeitig">
-          <Layers size={16}/>
-          <input type="checkbox" checked={multiChannelEnabled} onChange={e=>setMultiChannelEnabled(e.target.checked)}/>
-          Multi-Channel
-        </label>
+  {/* Audio Controls */}
+  <div className="px-3 py-2 rounded-xl border bg-neutral-50 flex items-center gap-2">
+    <Volume2 size={16} className="text-neutral-600"/>
+    <label className="flex items-center gap-2 text-sm whitespace-nowrap">
+      <span className="hidden lg:inline">Master</span> {Math.round(masterVol*100)}%
+      <input type="range" min={0} max={1} step={0.01} value={masterVol} onChange={e=>setMasterVol(parseFloat(e.target.value))} className="w-20 lg:w-24"/>
+    </label>
+  </div>
+  
+  {/* Audio Features */}
+  <div className="flex items-center gap-2 px-3 py-2 rounded-xl border bg-white">
+    <label className="flex items-center gap-2 cursor-pointer select-none" title="Multi-Channel: Mehrere Sounds gleichzeitig">
+      <Layers size={16}/>
+      <input type="checkbox" checked={multiChannelEnabled} onChange={e=>setMultiChannelEnabled(e.target.checked)}/>
+      <span className="hidden lg:inline text-sm">Multi</span>
+    </label>
+    
+    <div className="w-px h-6 bg-neutral-200"/>
+    
+    <label className="flex items-center gap-2 cursor-pointer select-none" title="Audio-Normalisierung: Gleicht Lautstärke-Unterschiede aus">
+      <Volume2 size={16}/>
+      <input type="checkbox" checked={audioNormalizationEnabled} onChange={e=>setAudioNormalizationEnabled(e.target.checked)}/>
+      <span className="hidden lg:inline text-sm">Norm</span>
+    </label>
+    
+    <div className="w-px h-6 bg-neutral-200"/>
+    
+    <button className="flex items-center gap-1 text-sm" onClick={stopAllChannels} title="Alle Sounds stoppen">
+      <Pause size={16}/> 
+      <span className="hidden lg:inline">Stop All</span>
+    </button>
+  </div>
 
-        <label className="px-3 py-2 rounded-xl border flex items-center gap-2 cursor-pointer select-none" title="Audio-Normalisierung: Gleicht Lautstärke-Unterschiede aus">
-        <Volume2 size={16}/>
-        <input type="checkbox" checked={audioNormalizationEnabled} onChange={e=>setAudioNormalizationEnabled(e.target.checked)}/>
-         Normalisierung
-        </label>
-        
-        <button className="px-3 py-2 rounded-xl border" onClick={stopAllChannels}><Pause size={16}/> Stop All</button>
+  {/* Import/Export */}
+  <div className="flex items-center gap-1">
+    <button className="px-2 py-2 rounded-xl border" onClick={exportConfig} title="Konfig exportieren">
+      <Download size={16}/>
+    </button>
+    
+    <label className="px-2 py-2 rounded-xl border cursor-pointer" title="Konfig importieren">
+      <Upload size={16}/>
+      <input type="file" accept="application/json" className="hidden" onChange={importConfigFromFile}/>
+    </label>
 
-        <button className="px-3 py-2 rounded-xl border" onClick={exportConfig} title="Konfig exportieren"><Download size={16}/> Export</button>
-        <label className="px-3 py-2 rounded-xl border cursor-pointer" title="Konfig importieren">
-          <Upload size={16}/> Import
-          <input type="file" accept="application/json" className="hidden" onChange={importConfigFromFile}/>
-        </label>
+    <button className="px-2 py-2 rounded-xl border" onClick={exportFullBackup} title="Backup inkl. Songs (ZIP)">
+      <Download size={16} className="text-blue-600"/>
+    </button>
 
-        <button className="px-3 py-2 rounded-xl border" onClick={exportFullBackup} title="Backup inkl. Songs (ZIP)"><Download size={16}/> Full Backup</button>
+    <label className="px-2 py-2 rounded-xl border cursor-pointer" title="Backup (ZIP) wiederherstellen">
+      <Upload size={16} className="text-blue-600"/>
+      <input
+        type="file"
+        accept=".zip,application/zip"
+        className="hidden"
+        onChange={async (e) => {
+          const f = e.target.files?.[0]
+          if (!f) return
+          try {
+            const analysis = await analyzeBackupZip(f)
+            setRestoreFile(f)
+            setRestoreAnalysis(analysis)
+            setRestoreOpen(true)
+          } catch (err:any) {
+            console.error(err)
+            alert("Analyse fehlgeschlagen: "+(err?.message||err))
+          } finally {
+            e.currentTarget.value = ""
+          }
+        }}
+      />
+    </label>
+  </div>
 
-        <label className="px-3 py-2 rounded-xl border cursor-pointer" title="Backup (ZIP) wiederherstellen">
-          <Upload size={16}/> Full Restore
-          <input
-            type="file"
-            accept=".zip,application/zip"
-            className="hidden"
-            onChange={async (e) => {
-              const f = e.target.files?.[0]
-              if (!f) return
-              try {
-                const analysis = await analyzeBackupZip(f)
-                setRestoreFile(f)
-                setRestoreAnalysis(analysis)
-                setRestoreOpen(true)
-              } catch (err:any) {
-                console.error(err)
-                alert("Analyse fehlgeschlagen: "+(err?.message||err))
-              } finally {
-                e.currentTarget.value = ""
-              }
-            }}
-          />
-        </label>
+  {/* Controls */}
+  <div className="flex items-center gap-2">
+    <label className="px-3 py-2 rounded-xl border flex items-center gap-2 cursor-pointer select-none" title="Hotkeys: frei + 1–9/0, Leertaste = Stop">
+      <Keyboard size={16}/>
+      <input type="checkbox" checked={hotkeysEnabled} onChange={e=>setHotkeysEnabled(e.target.checked)}/>
+      <span className="hidden lg:inline text-sm">Hotkeys</span>
+    </label>
 
-        <label className="px-3 py-2 rounded-xl border flex items-center gap-2 cursor-pointer select-none" title="Hotkeys: frei + 1â€“9/0, Leertaste = Stop">
-          <Keyboard size={16}/>
-          <input type="checkbox" checked={hotkeysEnabled} onChange={e=>setHotkeysEnabled(e.target.checked)}/>
-          Hotkeys
-        </label>
-
-        <div className="px-3 py-2 rounded-xl border flex items-center gap-2">
-          {midiEnabled ? <Plug size={16}/> : <Unplug size={16}/>}
-          <label className="flex items-center gap-2 select-none">
-            MIDI
-            <input type="checkbox" checked={midiEnabled} onChange={e=>setMidiEnabled(e.target.checked)}/>
-          </label>
+    <div className="px-3 py-2 rounded-xl border flex items-center gap-2">
+      {midiEnabled ? <Plug size={16} className="text-green-600"/> : <Unplug size={16} className="text-neutral-400"/>}
+      <label className="flex items-center gap-2 select-none">
+        <span className="hidden lg:inline text-sm">MIDI</span>
+        <input type="checkbox" checked={midiEnabled} onChange={e=>setMidiEnabled(e.target.checked)}/>
+      </label>
+      {midiEnabled && midiInputs.length > 0 && (
+        <>
+          <div className="w-px h-6 bg-neutral-200"/>
           <select
-            className="border rounded-xl px-2 py-1"
+            className="border rounded px-2 py-1 text-xs"
             disabled={!midiEnabled || !midiInputs.length}
             value={midiInputId || ""}
             onChange={e=>setMidiInputId(e.target.value || undefined)}
             title={midiInputs.length? "MIDI-Eingang wählen" : "Kein MIDI-Gerät gefunden"}
           >
-            <option value="">{midiInputs.length? "Auto (erstes Gerät)" : " ”"}</option>
+            <option value="">Auto</option>
             {midiInputs.map(inp => <option key={inp.id} value={inp.id}>{inp.name}</option>)}
           </select>
-        </div>
-      </header>
+        </>
+      )}
+    </div>
+  </div>
+</header>
 
       <div className="flex flex-wrap gap-2 mb-4">
         <button className="px-3 py-2 rounded-xl border" onClick={addBank}>+ Bank hinzufügen</button>

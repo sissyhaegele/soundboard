@@ -44,9 +44,17 @@ class AudioChannel {
   audio: HTMLAudioElement;
   id: string;
   padId: string | null = null;
-  private blobUrl: string | null = null;  
+  private blobUrl: string | null = null;
   private fadeInterval: number | null = null;
   private onEndedCallback: (() => void) | null = null;
+  
+  // Web Audio API für Normalisierung
+  private audioContext: AudioContext | null = null;
+  private sourceNode: MediaElementAudioSourceNode | null = null;
+  private gainNode: GainNode | null = null;
+  private compressorNode: DynamicsCompressorNode | null = null;
+  private isAudioContextSetup = false;
+  private normalizationEnabled = false;
   
   constructor(id: string) {
     this.id = id;
@@ -54,15 +62,69 @@ class AudioChannel {
     this.audio.preload = 'none';
   }
   
-async play(src: string, volume: number, fadeMs: number, padId: string, startTime = 0, loop = false, onEnded?: () => void): Promise<void> {
-  this.padId = padId;
-  this.onEndedCallback = onEnded || null;  // DIESE ZEILE HINZUFÜGEN
-  this.audio.src = src;
-  if (src.startsWith('blob:')) {
-    this.blobUrl = src;
+  setNormalizationEnabled(enabled: boolean) {
+    this.normalizationEnabled = enabled;
+    
+    if (this.isAudioContextSetup && this.sourceNode && this.gainNode && this.compressorNode) {
+      this.sourceNode.disconnect();
+      this.compressorNode.disconnect();
+      
+      if (enabled) {
+        this.sourceNode.connect(this.compressorNode);
+        this.compressorNode.connect(this.gainNode);
+      } else {
+        this.sourceNode.connect(this.gainNode);
+      }
+      
+      this.gainNode.connect(this.audioContext!.destination);
+    }
   }
-  this.audio.volume = 0;
-  this.audio.loop = loop;
+  
+  private setupAudioContext() {
+    if (this.isAudioContextSetup) return;
+    
+    this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    this.sourceNode = this.audioContext.createMediaElementSource(this.audio);
+    this.gainNode = this.audioContext.createGain();
+    this.compressorNode = this.audioContext.createDynamicsCompressor();
+    
+    this.compressorNode.threshold.setValueAtTime(-24, this.audioContext.currentTime);
+    this.compressorNode.knee.setValueAtTime(30, this.audioContext.currentTime);
+    this.compressorNode.ratio.setValueAtTime(12, this.audioContext.currentTime);
+    this.compressorNode.attack.setValueAtTime(0.003, this.audioContext.currentTime);
+    this.compressorNode.release.setValueAtTime(0.25, this.audioContext.currentTime);
+    
+    if (this.normalizationEnabled) {
+      this.sourceNode.connect(this.compressorNode);
+      this.compressorNode.connect(this.gainNode);
+    } else {
+      this.sourceNode.connect(this.gainNode);
+    }
+    
+    this.gainNode.connect(this.audioContext.destination);
+    this.isAudioContextSetup = true;
+  }
+
+  async play(src: string, volume: number, fadeMs: number, padId: string, startTime = 0, loop = false, onEnded?: () => void): Promise<void> {
+    this.padId = padId;
+    this.onEndedCallback = onEnded || null;
+    this.audio.src = src;
+    if (src.startsWith('blob:')) {
+      this.blobUrl = src;
+    }
+    this.audio.loop = loop;
+    
+    if (!this.isAudioContextSetup) {
+      this.setupAudioContext();
+    }
+    
+    if (this.audioContext && this.audioContext.state === 'suspended') {
+      await this.audioContext.resume();
+    }
+    
+    if (this.gainNode) {
+      this.gainNode.gain.setValueAtTime(0, this.audioContext!.currentTime);
+    }
     
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -74,7 +136,6 @@ async play(src: string, volume: number, fadeMs: number, padId: string, startTime
         this.audio.removeEventListener('canplay', onCanPlay);
         this.audio.removeEventListener('error', onError);
         
-        // Setze Start-Zeit nach dem Laden
         if (startTime > 0 && this.audio.duration >= startTime) {
           this.audio.currentTime = startTime;
         }
@@ -89,51 +150,47 @@ async play(src: string, volume: number, fadeMs: number, padId: string, startTime
         reject(new Error("Ladefehler"));
       };
       
-    this.audio.addEventListener('canplay', onCanPlay, { once: true });
-this.audio.addEventListener('error', onError, { once: true });
-this.audio.load();
-});
+      this.audio.addEventListener('canplay', onCanPlay, { once: true });
+      this.audio.addEventListener('error', onError, { once: true });
+      this.audio.load();
+    });
 
-// Event-Listener für Song-Ende
-this.audio.onended = () => {
-  if (!this.audio.loop) {
-    // Cleanup ohne Fade
+    this.audio.onended = () => {
+      if (!this.audio.loop) {
+        this.audio.pause();
+        this.audio.currentTime = 0;
+        if (this.blobUrl) {
+          URL.revokeObjectURL(this.blobUrl);
+          this.blobUrl = null;
+        }
+        this.padId = null;
+        if (this.onEndedCallback) {
+          this.onEndedCallback();
+        }
+      }
+    };
+
+    await this.audio.play();
+    await this.fadeVolume(0, volume, fadeMs);
+  }
+
+  async stop(fadeMs: number): Promise<void> {
+    await this.fadeVolume(this.gainNode?.gain.value || 0, 0, fadeMs);
     this.audio.pause();
     this.audio.currentTime = 0;
+    this.audio.loop = false;
     if (this.blobUrl) {
       URL.revokeObjectURL(this.blobUrl);
       this.blobUrl = null;
     }
     this.padId = null;
-    if (this.onEndedCallback) {
-      this.onEndedCallback();
-    }
   }
-};
-
-await this.audio.play();
-await this.fadeVolume(0, volume, fadeMs);
-}  
-
-// Schließt die play() Methode
-
-async stop(fadeMs: number): Promise<void> {
-  console.log('Stop called with fadeMs:', fadeMs, 'current volume:', this.audio.volume);
-  console.trace('Stop called from:'); // NEU - zeigt den Call Stack
-  await this.fadeVolume(this.audio.volume, 0, fadeMs);
-  console.log('Fade completed, pausing audio');
-  this.audio.pause();
-  this.audio.currentTime = 0;
-  this.audio.loop = false;
-  if (this.blobUrl) {
-    URL.revokeObjectURL(this.blobUrl);
-    this.blobUrl = null;
-  }
-  this.padId = null;
-}
-
+  
   setVolume(volume: number) {
-    this.audio.volume = Math.max(0, Math.min(1, volume));
+    const clampedVolume = Math.max(0, Math.min(1, volume));
+    if (this.gainNode && this.audioContext) {
+      this.gainNode.gain.setValueAtTime(clampedVolume, this.audioContext.currentTime);
+    }
   }
   
   getCurrentTime(): number {
@@ -145,6 +202,8 @@ async stop(fadeMs: number): Promise<void> {
   }
   
   private async fadeVolume(from: number, to: number, ms: number): Promise<void> {
+    if (!this.gainNode || !this.audioContext) return;
+    
     if (this.fadeInterval) {
       clearInterval(this.fadeInterval);
     }
@@ -160,10 +219,11 @@ async stop(fadeMs: number): Promise<void> {
         if (currentStep > steps) {
           if (this.fadeInterval) clearInterval(this.fadeInterval);
           this.fadeInterval = null;
-          this.audio.volume = to;
+          this.gainNode!.gain.setValueAtTime(to, this.audioContext!.currentTime);
           resolve();
         } else {
-          this.audio.volume = Math.max(0, Math.min(1, from + diff * (currentStep / steps)));
+          const newVolume = Math.max(0, Math.min(1, from + diff * (currentStep / steps)));
+          this.gainNode!.gain.setValueAtTime(newVolume, this.audioContext!.currentTime);
         }
       }, dt);
     });
@@ -721,6 +781,9 @@ export default function App(){
   })
   const [restoreBusy, setRestoreBusy] = useState(false)
   const [pendingPads, setPendingPads] = useState<Set<string>>(new Set())
+  const [audioNormalizationEnabled, setAudioNormalizationEnabled] = useState<boolean>(
+  ()=>localStorage.getItem("musicpad_normalization_v1")!=="0"
+)
 
   /* ---------- Init & Persist ---------- */
   
@@ -783,6 +846,14 @@ useEffect(() => {
   },[multiChannelEnabled])
   
   useEffect(()=>{ 
+    try {
+      localStorage.setItem("musicpad_normalization_v1", audioNormalizationEnabled ? "1" : "0")
+    } catch (error) {
+      console.warn('Fehler beim Speichern der Normalisierungs-Einstellung:', error)
+    }
+  },[audioNormalizationEnabled])
+
+  useEffect(()=>{ 
     if(midiInputId) {
       try {
         localStorage.setItem(LS_MIDI_IN, midiInputId)
@@ -793,6 +864,13 @@ useEffect(() => {
   },[midiInputId])
   
   useEffect(()=>{ setBankNameDraft(currentBank.name) },[currentBankIdx])
+
+// Update aller Channels bei Normalisierungs-Toggle
+useEffect(() => {
+  audioChannels.forEach(channel => {
+    channel.setNormalizationEnabled(audioNormalizationEnabled);
+  });
+}, [audioNormalizationEnabled, audioChannels]);
 
   /* ---------- PWA ---------- */
   useEffect(()=>{
@@ -1570,6 +1648,12 @@ async function playPad(pad: Pad) {
           <Layers size={16}/>
           <input type="checkbox" checked={multiChannelEnabled} onChange={e=>setMultiChannelEnabled(e.target.checked)}/>
           Multi-Channel
+        </label>
+
+        <label className="px-3 py-2 rounded-xl border flex items-center gap-2 cursor-pointer select-none" title="Audio-Normalisierung: Gleicht Lautstärke-Unterschiede aus">
+        <Volume2 size={16}/>
+        <input type="checkbox" checked={audioNormalizationEnabled} onChange={e=>setAudioNormalizationEnabled(e.target.checked)}/>
+         Normalisierung
         </label>
         
         <button className="px-3 py-2 rounded-xl border" onClick={stopAllChannels}><Pause size={16}/> Stop All</button>

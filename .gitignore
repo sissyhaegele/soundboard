@@ -53,3 +53,9 @@ banks und App/
 *.m4a
 *.ogg
 *.aac
+
+# Dokumentation (lokal halten)
+PROJEKT_DOKUMENTATION.md
+BENUTZERHANDBUCH.md
+*.md
+!README.md

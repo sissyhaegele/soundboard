@@ -64,3 +64,19 @@ BENUTZERHANDBUCH.md
 PROJEKT_KONTEXT.md
 PROJEKT_DOKUMENTATION.md
 BENUTZERHANDBUCH.md
+
+# Dokumentation (lokal halten)
+PROJEKT_KONTEXT.md
+PROJEKT_DOKUMENTATION.md
+BENUTZERHANDBUCH.md
+DEVELOPMENT.md
+INSTALLATION.md
+
+# Build/Setup Skripte (lokal halten)
+*.ps1
+*.bat
+*.html
+production-server.js
+
+# Nur wichtige Files tracken
+!README.md

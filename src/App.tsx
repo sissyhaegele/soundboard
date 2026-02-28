@@ -45,7 +45,6 @@ class AudioChannel {
   id: string;
   padId: string | null = null;
   private blobUrl: string | null = null;
-  private fadeInterval: number | null = null;
   private onEndedCallback: (() => void) | null = null;
   
   // Web Audio API für Normalisierung
@@ -171,11 +170,15 @@ class AudioChannel {
     };
 
     await this.audio.play();
-    await this.fadeVolume(0, volume, fadeMs);
+    this.fadeVolume(0, volume, fadeMs);
   }
 
   async stop(fadeMs: number): Promise<void> {
-    await this.fadeVolume(this.gainNode?.gain.value || 0, 0, fadeMs);
+    this.fadeVolume(this.gainNode?.gain.value || 0, 0, fadeMs);
+    
+    // Warte bis der Fade abgeschlossen ist, dann Audio stoppen
+    await new Promise<void>(resolve => setTimeout(resolve, fadeMs));
+    
     this.audio.pause();
     this.audio.currentTime = 0;
     this.audio.loop = false;
@@ -201,32 +204,16 @@ class AudioChannel {
     return this.audio.duration;
   }
   
-  private async fadeVolume(from: number, to: number, ms: number): Promise<void> {
+  private fadeVolume(from: number, to: number, ms: number): void {
     if (!this.gainNode || !this.audioContext) return;
     
-    if (this.fadeInterval) {
-      clearInterval(this.fadeInterval);
-    }
-    
-    const steps = 30;
-    const diff = to - from;
-    const dt = ms / steps;
-    let currentStep = 0;
-    
-    return new Promise<void>((resolve) => {
-      this.fadeInterval = window.setInterval(() => {
-        currentStep++;
-        if (currentStep > steps) {
-          if (this.fadeInterval) clearInterval(this.fadeInterval);
-          this.fadeInterval = null;
-          this.gainNode!.gain.setValueAtTime(to, this.audioContext!.currentTime);
-          resolve();
-        } else {
-          const newVolume = Math.max(0, Math.min(1, from + diff * (currentStep / steps)));
-          this.gainNode!.gain.setValueAtTime(newVolume, this.audioContext!.currentTime);
-        }
-      }, dt);
-    });
+    const now = this.audioContext.currentTime;
+    this.gainNode.gain.cancelScheduledValues(now);
+    this.gainNode.gain.setValueAtTime(from, now);
+    this.gainNode.gain.linearRampToValueAtTime(
+      Math.max(0, Math.min(1, to)),
+      now + ms / 1000
+    );
   }
 }
 

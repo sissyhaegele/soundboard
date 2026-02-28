@@ -425,7 +425,7 @@ function PadButton(p:{
             </span>
           )}
           {p.pad.source === "proxy" && (
-            <span title="Ãœber Proxy geladen">
+            <span title="Über Proxy geladen">
               <Globe size={16} className="text-blue-500" />
             </span>
           )}
@@ -471,7 +471,7 @@ function PadButton(p:{
       
       {p.pad.lastError && (
         <div className="mt-1 text-xs text-red-500 truncate" title={p.pad.lastError}>
-          âš  {p.pad.lastError}
+          ⚠ {p.pad.lastError}
         </div>
       )}
       
@@ -515,12 +515,24 @@ function EditPadModal(props:{
           <input className="border p-2 rounded-xl" value={pState.title} onChange={e=>setP({...pState, title: e.target.value})}/>
         </label>
 
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-4 text-xs text-blue-800">
+          <p className="font-medium mb-1">Wie funktioniert die Audio-Quelle?</p>
+          <p>
+            <strong>Link/URL:</strong> Verweist auf eine Datei im Internet – sie wird beim Abspielen gestreamt, nicht heruntergeladen. 
+            Die Datei muss online erreichbar bleiben.
+          </p>
+          <p className="mt-1">
+            <strong>Lokale Datei:</strong> Die Datei wird direkt in deinem Browser gespeichert (nicht auf einem Server). 
+            Sie funktioniert auch offline, ist aber nur auf diesem Gerät/Browser verfügbar.
+          </p>
+        </div>
+
         <div className="grid gap-1 mb-4">
           <span className="text-sm font-medium">Link/URL (optional)</span>
           <div className="flex gap-2">
             <input
               className="border p-2 rounded-xl flex-1"
-              placeholder="https://â€¦ (mp3/wav/m4a)"
+              placeholder="https://… (mp3/wav/m4a)"
               value={pState.source === "url" ? pState.src : pState.source === "proxy" ? pState.src.replace('proxy:', '') : ""}
               onChange={e=>{
                 const url = e.target.value.trim()
@@ -554,7 +566,7 @@ function EditPadModal(props:{
                 <span className="font-medium">CORS-Problem erkannt</span>
               </div>
               <p className="text-orange-600 text-xs mb-2">
-                Diese URL kann aufgrund von CORS-BeschrÃ¤nkungen nicht direkt geladen werden.
+                Diese URL kann aufgrund von CORS-Beschränkungen nicht direkt geladen werden.
               </p>
               <button 
                 className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs flex items-center gap-1"
@@ -566,45 +578,100 @@ function EditPadModal(props:{
             </div>
           )}
 
+          {pState.source === "url" && pState.src && !pState.corsError && (
+            <div className="bg-emerald-50 border border-emerald-300 rounded-lg p-2 mt-1 flex items-center gap-2 text-emerald-700 text-sm">
+              <ExternalLink size={14}/>
+              <span className="truncate">Verlinkt: {pState.src.length > 50 ? pState.src.substring(0, 50) + "…" : pState.src}</span>
+            </div>
+          )}
+          
+          {pState.source === "proxy" && (
+            <div className="bg-blue-50 border border-blue-300 rounded-lg p-2 mt-1 flex items-center gap-2 text-blue-700 text-sm">
+              <Globe size={14}/>
+              <span className="truncate">Über Proxy verlinkt: {pState.src.replace('proxy:', '').substring(0, 40)}…</span>
+            </div>
+          )}
+
           <span className="text-xs text-neutral-500">
             Hinweis: Manche URLs sind durch CORS geschützt. Verwende den Test-Button oder lade die Datei lokal hoch.
           </span>
         </div>
 
         <div className="grid gap-1 mb-3">
-          <span className="text-sm font-medium">Datei lokal speichern</span>
-          <input
-            type="file"
-            accept="audio/*"
-            onChange={async e=>{
-              const f = e.target.files?.[0]
-              if(!f) return
-              if(!(f.type||"").startsWith("audio/")){ alert("Bitte mp3/wav/m4a wÃ¤hlen."); return }
-              try {
-                await idbPut(idbKeyForPad(pState.id), f)
-                setP({
-                  ...pState,
-                  source: "idb",
-                  src: "idb:"+pState.id,
-                  filename: f.name,
-                  size: f.size,
-                  corsError: false,
-                  lastError: undefined
-                })
-                alert("Datei lokal gespeichert.")
-              } catch (error) {
-                console.error('IndexedDB Fehler:', error)
-                alert("Fehler beim Speichern. Versuche es erneut oder lade die Seite neu.")
-              }
-            }}
-          />
-          {pState.source === "idb" && (
-            <div className="text-xs text-neutral-600 flex items-center justify-between">
-              <span>
-                Gespeichert: {pState.filename || "unbekannt"}{pState.size ? ` (${Math.round(pState.size/1024)} KB)` : ""}
-              </span>
-              <button className="px-2 py-1 rounded border" onClick={()=>onClearLocal(pState)}>Lokal löschen</button>
+          <span className="text-sm font-medium">Datei lokal speichern (im Browser)</span>
+          <span className="text-xs text-neutral-500">Die Datei wird nur in diesem Browser gespeichert – nicht hochgeladen oder geteilt.</span>
+          
+          {pState.source === "idb" ? (
+            <div className="bg-emerald-50 border border-emerald-300 rounded-xl p-3 mt-1">
+              <div className="flex items-center gap-2 text-emerald-700 text-sm font-medium mb-1">
+                <Music2 size={16}/>
+                Lokale Datei vorhanden
+              </div>
+              <div className="text-emerald-800 text-sm">
+                {pState.filename || "Unbekannte Datei"}{pState.size ? ` (${(pState.size/1024/1024).toFixed(1)} MB)` : ""}
+              </div>
+              <div className="flex gap-2 mt-2">
+                <label className="px-3 py-1.5 rounded-lg border border-emerald-300 bg-white text-xs cursor-pointer hover:bg-emerald-50 transition-colors">
+                  Datei ersetzen
+                  <input
+                    type="file"
+                    accept="audio/*"
+                    className="hidden"
+                    onChange={async e=>{
+                      const f = e.target.files?.[0]
+                      if(!f) return
+                      if(!(f.type||"").startsWith("audio/")){ alert("Bitte mp3/wav/m4a wählen."); return }
+                      try {
+                        await idbPut(idbKeyForPad(pState.id), f)
+                        setP({
+                          ...pState,
+                          source: "idb",
+                          src: "idb:"+pState.id,
+                          filename: f.name,
+                          size: f.size,
+                          corsError: false,
+                          lastError: undefined
+                        })
+                      } catch (error) {
+                        console.error('IndexedDB Fehler:', error)
+                        alert("Fehler beim Speichern. Versuche es erneut oder lade die Seite neu.")
+                      }
+                    }}
+                  />
+                </label>
+                <button 
+                  className="px-3 py-1.5 rounded-lg border border-red-200 text-red-600 text-xs hover:bg-red-50 transition-colors"
+                  onClick={()=>onClearLocal(pState)}
+                >
+                  Lokal löschen
+                </button>
+              </div>
             </div>
+          ) : (
+            <input
+              type="file"
+              accept="audio/*"
+              onChange={async e=>{
+                const f = e.target.files?.[0]
+                if(!f) return
+                if(!(f.type||"").startsWith("audio/")){ alert("Bitte mp3/wav/m4a wählen."); return }
+                try {
+                  await idbPut(idbKeyForPad(pState.id), f)
+                  setP({
+                    ...pState,
+                    source: "idb",
+                    src: "idb:"+pState.id,
+                    filename: f.name,
+                    size: f.size,
+                    corsError: false,
+                    lastError: undefined
+                  })
+                } catch (error) {
+                  console.error('IndexedDB Fehler:', error)
+                  alert("Fehler beim Speichern. Versuche es erneut oder lade die Seite neu.")
+                }
+              }}
+            />
           )}
         </div>
 
@@ -692,10 +759,10 @@ function EditPadModal(props:{
             <button
               className={"px-3 py-1.5 rounded-xl border flex items-center gap-2 " + (midiLearningFor===pState.id ? "bg-emerald-600 text-white" : "")}
               onClick={()=>onStartMidiLearn(pState.id)}
-              title="MIDI-Learn starten: Taste/Pad drÃ¼cken"
+              title="MIDI-Learn starten: Taste/Pad drücken"
             >
               <Music2 size={16}/>
-              {midiLearningFor===pState.id ? "MIDI-Learn aktivâ€¦ drÃ¼cke Note" : "MIDI-Learn"}
+              {midiLearningFor===pState.id ? "MIDI-Learn aktiv… drücke Note" : "MIDI-Learn"}
             </button>
             {typeof pState.midiNote==="number" && (
               <span className="text-neutral-600">
@@ -796,7 +863,7 @@ useEffect(() => {
     try {
       localStorage.setItem(LS_MASTER, String(masterVol))
     } catch (error) {
-      console.warn('Fehler beim Speichern der Master-LautstÃ¤rke:', error)
+      console.warn('Fehler beim Speichern der Master-Lautstärke:', error)
     }
   },[masterVol])
   
@@ -929,11 +996,11 @@ useEffect(() => {
                       window.location.hostname === 'localhost'
       
       if (!isSecure) {
-        alert('App-Installation nur über HTTPS möglich. In der Production-Umgebung verfÃ¼gbar.')
+        alert('App-Installation nur über HTTPS möglich. In der Production-Umgebung verfügbar.')
         return
       }
       
-      alert(`Um diese App zu installieren:\n\nChrome/Edge: Menü â†’ "App installieren"\nFirefox: Adressleiste â†’ Plus-Symbol\nSafari: Teilen â†’ "Zum Home-Bildschirm"`)
+      alert(`Um diese App zu installieren:\n\nChrome/Edge: Menü → "App installieren"\nFirefox: Adressleiste → Plus-Symbol\nSafari: Teilen → "Zum Home-Bildschirm"`)
       return
     }
     
@@ -1829,7 +1896,7 @@ async function playPad(pad: Pad) {
                   <ul className="list-disc pl-5">
                     {restoreAnalysis.banks.map(b => (
                       <li key={b}>
-                        <span className="font-medium">{b}</span> â€“ {restoreAnalysis.perBankCounts[b] ?? 0} Datei(en)
+                        <span className="font-medium">{b}</span> – {restoreAnalysis.perBankCounts[b] ?? 0} Datei(en)
                       </li>
                     ))}
                   </ul>
@@ -1896,7 +1963,7 @@ async function playPad(pad: Pad) {
                     onClick={()=> restoreFile && applyRestoreFromZip(restoreFile, restoreOpts)}
                     disabled={restoreBusy || !restoreFile}
                   >
-                    {restoreBusy ? "Wiederherstellenâ€¦" : "Wiederherstellen"}
+                    {restoreBusy ? "Wiederherstellen…" : "Wiederherstellen"}
                   </button>
                 </div>
               </div>

@@ -11,7 +11,7 @@ import {
 } from "lucide-react"
 import JSZip from "jszip"
 import { saveAs } from "file-saver"
-import { DragDropContext, Droppable, Draggable, DropResult } from 'react-beautiful-dnd'
+import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd'
 import { debounce } from 'lodash'
 
 
@@ -40,6 +40,21 @@ function secondsToTimeString(seconds: number): string {
 }
 
 /* ===================== Audio Channel Klasse ===================== */
+
+/**
+ * Ein einziger, gemeinsam genutzter AudioContext fuer alle Kanaele.
+ * Browser (v.a. Chrome) erlauben nur ~6 AudioContexts pro Dokument -
+ * bei 8 eigenen Kontexten schlaegt der 7. Kanal beim Anlegen fehl.
+ */
+let sharedAudioContext: AudioContext | null = null
+function getSharedAudioContext(): AudioContext {
+  if (!sharedAudioContext) {
+    const Ctor = window.AudioContext || (window as any).webkitAudioContext
+    sharedAudioContext = new Ctor()
+  }
+  return sharedAudioContext
+}
+
 class AudioChannel {
   audio: HTMLAudioElement;
   id: string;
@@ -54,6 +69,11 @@ class AudioChannel {
   private compressorNode: DynamicsCompressorNode | null = null;
   private isAudioContextSetup = false;
   private normalizationEnabled = false;
+
+  // Zustand des laufenden Fades (AudioContext-Zeit), damit setVolume()
+  // einen aktiven Fade umlenken statt ueberschreiben kann.
+  private fadeEndTime = 0;
+  private fadeTarget = 0;
   
   constructor(id: string) {
     this.id = id;
@@ -82,7 +102,7 @@ class AudioChannel {
   private setupAudioContext() {
     if (this.isAudioContextSetup) return;
     
-    this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    this.audioContext = getSharedAudioContext();
     this.sourceNode = this.audioContext.createMediaElementSource(this.audio);
     this.gainNode = this.audioContext.createGain();
     this.compressorNode = this.audioContext.createDynamicsCompressor();
@@ -104,6 +124,51 @@ class AudioChannel {
     this.isAudioContextSetup = true;
   }
 
+  private releaseSource() {
+    this.audio.pause();
+    this.audio.removeAttribute('src');
+    this.audio.load();
+    this.audio.loop = false;
+    if (this.blobUrl) {
+      URL.revokeObjectURL(this.blobUrl);
+      this.blobUrl = null;
+    }
+    this.padId = null;
+    this.onEndedCallback = null;
+  }
+
+  private loadAudio(startTime: number): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timeout beim Laden"));
+      }, 10000);
+
+      const cleanup = () => {
+        clearTimeout(timeout);
+        this.audio.removeEventListener('canplay', onCanPlay);
+        this.audio.removeEventListener('error', onError);
+      };
+
+      const onCanPlay = () => {
+        cleanup();
+        if (startTime > 0 && this.audio.duration >= startTime) {
+          this.audio.currentTime = startTime;
+        }
+        resolve();
+      };
+
+      const onError = () => {
+        cleanup();
+        reject(new Error("Ladefehler"));
+      };
+
+      this.audio.addEventListener('canplay', onCanPlay);
+      this.audio.addEventListener('error', onError);
+      this.audio.load();
+    });
+  }
+
   async play(src: string, volume: number, fadeMs: number, padId: string, startTime = 0, loop = false, onEnded?: () => void): Promise<void> {
     this.padId = padId;
     this.onEndedCallback = onEnded || null;
@@ -121,38 +186,22 @@ class AudioChannel {
       await this.audioContext.resume();
     }
     
-    if (this.gainNode) {
-      this.gainNode.gain.setValueAtTime(0, this.audioContext!.currentTime);
+    if (this.gainNode && this.audioContext) {
+      const now = this.audioContext.currentTime;
+      this.gainNode.gain.cancelScheduledValues(now);
+      this.gainNode.gain.setValueAtTime(0, now);
+      this.fadeEndTime = 0;
+      this.fadeTarget = 0;
     }
     
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error("Timeout beim Laden"));
-      }, 10000);
-      
-      const onCanPlay = () => {
-        clearTimeout(timeout);
-        this.audio.removeEventListener('canplay', onCanPlay);
-        this.audio.removeEventListener('error', onError);
-        
-        if (startTime > 0 && this.audio.duration >= startTime) {
-          this.audio.currentTime = startTime;
-        }
-        
-        resolve();
-      };
-      
-      const onError = () => {
-        clearTimeout(timeout);
-        this.audio.removeEventListener('canplay', onCanPlay);
-        this.audio.removeEventListener('error', onError);
-        reject(new Error("Ladefehler"));
-      };
-      
-      this.audio.addEventListener('canplay', onCanPlay, { once: true });
-      this.audio.addEventListener('error', onError, { once: true });
-      this.audio.load();
-    });
+    try {
+      await this.loadAudio(startTime);
+    } catch (err) {
+      // Kanal wieder freigeben, sonst bleibt er dauerhaft belegt und
+      // die Blob-URL wird nie zurueckgegeben.
+      this.releaseSource();
+      throw err;
+    }
 
     this.audio.onended = () => {
       if (!this.audio.loop) {
@@ -169,7 +218,13 @@ class AudioChannel {
       }
     };
 
-    await this.audio.play();
+    try {
+      await this.audio.play();
+    } catch (err) {
+      this.releaseSource();
+      throw err;
+    }
+
     this.fadeVolume(0, volume, fadeMs);
   }
 
@@ -179,21 +234,31 @@ class AudioChannel {
     // Warte bis der Fade abgeschlossen ist, dann Audio stoppen
     await new Promise<void>(resolve => setTimeout(resolve, fadeMs));
     
-    this.audio.pause();
-    this.audio.currentTime = 0;
-    this.audio.loop = false;
-    if (this.blobUrl) {
-      URL.revokeObjectURL(this.blobUrl);
-      this.blobUrl = null;
-    }
-    this.padId = null;
+    this.releaseSource();
   }
   
   setVolume(volume: number) {
+    if (!this.gainNode || !this.audioContext) return;
+
     const clampedVolume = Math.max(0, Math.min(1, volume));
-    if (this.gainNode && this.audioContext) {
-      this.gainNode.gain.setValueAtTime(clampedVolume, this.audioContext.currentTime);
+    const now = this.audioContext.currentTime;
+
+    // Laeuft gerade ein Fade? Dann nur das Ziel anpassen, statt den Wert
+    // hart zu setzen - sonst rampt der bereits geplante Fade wieder auf
+    // die alte Lautstaerke zurueck (z.B. Master-Regler waehrend Fade-In).
+    if (now < this.fadeEndTime) {
+      // Fade-Out (Ziel 0) nicht unterbrechen - das Pad soll stoppen.
+      if (this.fadeTarget === 0) return;
+      const current = this.gainNode.gain.value;
+      this.gainNode.gain.cancelScheduledValues(now);
+      this.gainNode.gain.setValueAtTime(current, now);
+      this.gainNode.gain.linearRampToValueAtTime(clampedVolume, this.fadeEndTime);
+      this.fadeTarget = clampedVolume;
+      return;
     }
+
+    this.gainNode.gain.cancelScheduledValues(now);
+    this.gainNode.gain.setValueAtTime(clampedVolume, now);
   }
   
   getCurrentTime(): number {
@@ -208,12 +273,15 @@ class AudioChannel {
     if (!this.gainNode || !this.audioContext) return;
     
     const now = this.audioContext.currentTime;
+    const target = Math.max(0, Math.min(1, to));
+    const endTime = now + ms / 1000;
+
     this.gainNode.gain.cancelScheduledValues(now);
     this.gainNode.gain.setValueAtTime(from, now);
-    this.gainNode.gain.linearRampToValueAtTime(
-      Math.max(0, Math.min(1, to)),
-      now + ms / 1000
-    );
+    this.gainNode.gain.linearRampToValueAtTime(target, endTime);
+
+    this.fadeEndTime = endTime;
+    this.fadeTarget = target;
   }
 }
 
@@ -272,10 +340,14 @@ function hotLabel(idx:number): string | undefined {
 }
 
 /* ===================== CORS & Proxy Utils ===================== */
+// Hinweis: Ein Proxy laedt die Audio-Datei ueber einen fremden Server.
+// Fuer den Turnierbetrieb sind lokal hochgeladene Dateien (IndexedDB) die
+// verlaessliche Variante - der Proxy ist nur ein Notnagel fuer CORS-URLs.
+// Entfernt, weil nicht mehr nutzbar:
+//   cors-anywhere.herokuapp.com (Heroku-Free-Tier 2022 abgeschaltet)
+//   corsproxy.io                (benoetigt inzwischen einen API-Key)
 const PROXY_SERVICES = [
-  'https://cors-anywhere.herokuapp.com/',
-  'https://api.allorigins.win/raw?url=',
-  'https://corsproxy.io/?'
+  'https://api.allorigins.win/raw?url='
 ]
 
 function getProxyUrl(originalUrl: string, proxyIndex = 0): string {
@@ -1267,14 +1339,18 @@ async function clearLocal(p: Pad) {
   }
 
   function parseMidi(msg: MIDIMessageEvent){
-    const [status, d1, d2] = msg.data
+    const data = msg.data
+    if(!data || data.length < 3) return null
+    const [status, d1, d2] = data
     const cmd = status & 0xF0
     const ch  = (status & 0x0F) + 1
     return { cmd, note:d1, vel:d2, channel: ch }
   }
   
   function onMidi(ev: MIDIMessageEvent){
-    const { cmd, note, vel, channel } = parseMidi(ev)
+    const parsed = parseMidi(ev)
+    if(!parsed) return
+    const { cmd, note, vel, channel } = parsed
     if(cmd===0x90 && vel>0){
       if(midiLearningFor){
         setBanks(prev => prev.map((b,i)=> i!==currentBankIdx ? b : ({
@@ -1572,7 +1648,6 @@ async function playPad(pad: Pad) {
         if (!bankName || !fileName) continue
 
         const base = fileName.replace(/\.[^.]+$/,"")
-        const ext = (fileName.split(".").pop() || "").toLowerCase()
         const blob = await entry.async("blob")
         const bank = getOrCreateBankByName(bankName)
 

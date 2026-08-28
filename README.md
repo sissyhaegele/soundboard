@@ -1,34 +1,54 @@
-﻿# Soundboard
+# Soundboard
 
-Multi-Channel Audio Soundboard mit MIDI-Support und Drag & Drop.
+Browserbasierte PWA für Live-Sound-Management bei Turnieren und Events:
+Multi-Channel-Audio, MIDI-Steuerung, Hotkeys und Drag & Drop.
 
-## 🚀 Quick Start
+## Quick Start
 
-\\\powershell
-# Hauptmenü starten (empfohlen)
-.\soundboard-manager.ps1
+```bash
+yarn install
+yarn dev
+```
 
-# Oder direkt:
-.\start-dev.ps1   # Development-Server
-.\start-prod.ps1  # Production Build
-\\\
+Der Dev-Server läuft auf http://localhost:5173.
 
-## 📁 Script-Übersicht
+## Scripts
 
-- **soundboard-manager.ps1** - Zentrales Management-System mit Menü
-- **start-dev.ps1** - Entwicklungsserver starten (Port 5173)
-- **start-prod.ps1** - Production Build starten
-- **import-turniere.ps1** - Import aus C:\Turniere\Backup
-- **scripts-archiv/** - Archivierte alte Scripts
+| Befehl | Beschreibung |
+| --- | --- |
+| `yarn dev` | Entwicklungsserver (Port 5173) |
+| `yarn build` | Typecheck + Production-Build nach `dist/` |
+| `yarn typecheck` | Nur TypeScript prüfen |
+| `yarn preview` | Production-Build lokal ansehen (Port 5000) |
 
-## 🎯 Features
+## Features
 
-- Multi-Channel Audio (8 Kanäle)
-- MIDI Controller Support  
-- Hotkey Controls
-- Drag & Drop
-- Backup/Restore System
-- Port: 5173
+- **Multi-Channel-Audio** – bis zu 8 Sounds gleichzeitig, alle über einen
+  gemeinsamen Web-Audio-Graph
+- **Fade-In/Fade-Out** pro Pad, Start-Zeit und Loop einstellbar
+- **Audio-Normalisierung** (DynamicsCompressor) zuschaltbar
+- **MIDI-Controller-Support** inkl. MIDI-Learn pro Pad (Chrome/Edge)
+- **Hotkeys** – 1–9/0 sowie frei belegbare Tasten, Leertaste = Stop All
+- **Drag & Drop** zum Umsortieren der Pads
+- **Banks** für verschiedene Setups
+- **Backup/Restore** als ZIP inkl. Audio-Dateien, mit Konflikt-Strategien
+- **Offline-fähig** – Audio-Dateien liegen in IndexedDB, Einstellungen im
+  LocalStorage
+
+## Audio-Quellen
+
+Pro Pad stehen drei Quellen zur Verfügung:
+
+- **Lokale Datei** (empfohlen) – wird in IndexedDB gespeichert und funktioniert
+  offline
+- **URL** – direkter Link auf eine Audio-Datei; der Server muss CORS erlauben
+- **Proxy** – Notlösung für URLs ohne CORS-Header. Die Datei läuft dabei über
+  einen fremden Server; für den Turnierbetrieb sind lokale Dateien zuverlässiger.
+
+## Technologie
+
+React 18 · TypeScript 5 · Vite 5 · Tailwind CSS 3 · Web Audio API · WebMIDI ·
+IndexedDB · JSZip
 
 ---
 

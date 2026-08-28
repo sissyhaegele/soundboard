@@ -1099,17 +1099,9 @@ useEffect(() => {
 
   /* ---------- PWA ---------- */
   useEffect(()=>{
-    const registerServiceWorker = async () => {
-      if ('serviceWorker' in navigator) {
-        try {
-          const registration = await navigator.serviceWorker.register('/sw.js')
-          console.log('Service Worker registriert:', registration)
-        } catch (error) {
-          console.warn('Service Worker Registration fehlgeschlagen:', error)
-        }
-      }
-    }
-
+    // Die Registrierung des Service Workers passiert in index.html - dort
+    // wird localhost ausgenommen, damit der SW im Dev-Betrieb nicht
+    // dazwischenfunkt. Hier geht es nur um den Installations-Prompt.
     const isPWASupported = () => {
       return (
         'serviceWorker' in navigator &&
@@ -1119,8 +1111,6 @@ useEffect(() => {
         window.location.hostname === '127.0.0.1')
       )
     }
-
-    registerServiceWorker()
 
     if (!isPWASupported()) {
       console.log('PWA nicht unterstützt - HTTPS erforderlich oder unsicherer Context')

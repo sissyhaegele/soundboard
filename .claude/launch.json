@@ -4,8 +4,18 @@
     {
       "name": "soundboard-dev",
       "runtimeExecutable": "yarn",
-      "runtimeArgs": ["dev"],
+      "runtimeArgs": [
+        "dev"
+      ],
       "port": 5173
+    },
+    {
+      "name": "soundboard-preview",
+      "runtimeExecutable": "yarn",
+      "runtimeArgs": [
+        "preview"
+      ],
+      "port": 5000
     }
   ]
 }

@@ -11,7 +11,15 @@ import {
 } from "lucide-react"
 import JSZip from "jszip"
 import { saveAs } from "file-saver"
-import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd'
+import {
+  DndContext, DragEndEvent, PointerSensor, KeyboardSensor,
+  useSensor, useSensors, closestCenter
+} from '@dnd-kit/core'
+import {
+  SortableContext, rectSortingStrategy, arrayMove,
+  useSortable, sortableKeyboardCoordinates
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import { debounce } from 'lodash'
 
 
@@ -502,6 +510,7 @@ function PadButton(p:{
   isActive:boolean; 
   activeChannels: number;
   playback?: { current:number; duration:number };
+  dragHandleProps?: React.HTMLAttributes<HTMLDivElement>;
   onPlay:()=>void; 
   onPause:()=>void; 
   onEdit:()=>void;
@@ -523,8 +532,13 @@ function PadButton(p:{
   
   return (
     <div className={`${cls} ${p.isDragging ? 'opacity-50' : ''} relative`}>
-      {/* Drag Handle */}
-      <div className="absolute top-2 left-2 text-neutral-400 cursor-move">
+      {/* Drag Handle - nur hier wird gezogen, damit Play und Einstellungen
+          nicht mit der Ziehgeste konkurrieren. */}
+      <div
+        {...p.dragHandleProps}
+        className="absolute top-1 left-1 p-1.5 rounded-lg text-neutral-400 cursor-grab active:cursor-grabbing hover:bg-neutral-100 hover:text-neutral-600 touch-none"
+        title="Zum Umsortieren ziehen"
+      >
         <GripVertical size={16}/>
       </div>
       
@@ -629,6 +643,49 @@ function PadButton(p:{
       )}
       
       {/* Wellenform-Anzeige */}    </div>
+  )
+}
+
+/* ===================== UI: Sortierbares Pad ===================== */
+/**
+ * Huelle um PadButton fuer dnd-kit. Gezogen wird ausschliesslich am Grip
+ * oben links - die Listener landen deshalb nicht am ganzen Container.
+ */
+function SortablePad(props: {
+  pad: Pad
+  index: number
+  isActive: boolean
+  activeChannels: number
+  playback?: { current:number; duration:number }
+  onPlay: ()=>void
+  onPause: ()=>void
+  onEdit: ()=>void
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: props.pad.id })
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+        zIndex: isDragging ? 10 : undefined
+      }}
+    >
+      <PadButton
+        index={props.index}
+        pad={props.pad}
+        isActive={props.isActive}
+        activeChannels={props.activeChannels}
+        playback={props.playback}
+        onPlay={props.onPlay}
+        onPause={props.onPause}
+        onEdit={props.onEdit}
+        isDragging={isDragging}
+        dragHandleProps={{ ...attributes, ...listeners } as React.HTMLAttributes<HTMLDivElement>}
+      />
+    </div>
   )
 }
 
@@ -1362,17 +1419,26 @@ useEffect(()=>{
   }
 
   /* ---------- Drag & Drop Handler ---------- */
-  const handleDragEnd = (result: DropResult) => {
-  if (!result.destination) return
-  
-  const newPads = Array.from(currentBank.pads)
-  const [reorderedItem] = newPads.splice(result.source.index, 1)
-  newPads.splice(result.destination.index, 0, reorderedItem)
-  
-  setBanks(prev => prev.map((b, idx) => 
-    idx === currentBankIdx ? { ...b, pads: newPads } : b
-  ))
-}
+  /* ---------- Drag & Drop (Sortieren im Raster) ---------- */
+  // Der Pointer-Sensor loest erst nach 8px Bewegung aus, damit ein Klick
+  // auf den Grip nicht schon als Ziehen zaehlt.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  )
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+
+    const oldIndex = currentBank.pads.findIndex(p => p.id === active.id)
+    const newIndex = currentBank.pads.findIndex(p => p.id === over.id)
+    if (oldIndex < 0 || newIndex < 0) return
+
+    setBanks(prev => prev.map((b, idx) =>
+      idx === currentBankIdx ? { ...b, pads: arrayMove(b.pads, oldIndex, newIndex) } : b
+    ))
+  }
 
 async function stopAllChannels() {
   const promises = Array.from(activeChannels.values()).map(ch =>
@@ -2145,56 +2211,45 @@ async function playPad(pad: Pad) {
         </button>
       </div>
 
-      {/* Drag & Drop Grid */}
-      <DragDropContext onDragEnd={handleDragEnd}>
-        <Droppable droppableId="pads" direction="horizontal">
-          {(provided) => (
-            <main 
-              className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"
-              {...provided.droppableProps}
-              ref={provided.innerRef}
-            >
-              {currentBank.pads.map((pad, idx) => (
-                <Draggable key={pad.id} draggableId={pad.id} index={idx}>
-                  {(provided, snapshot) => (
-                    <div
-                      ref={provided.innerRef}
-                      {...provided.draggableProps}
-                      {...provided.dragHandleProps}
-                      style={{
-                        ...provided.draggableProps.style,
-                      }}
-                    >
-                      <PadButton
-                        index={idx}
-                        pad={pad}
-                        isActive={activeChannels.has(pad.id)}
-                        activeChannels={activeChannels.size}
-                        playback={playbackTimes.get(pad.id)}
-                        onPlay={() => playPad(pad)}
-                        onPause={() => {
-  const channel = activeChannels.get(pad.id);
-  if (channel) {
-    channel.stop(pad.fadeMs || 1000);
-    setActiveChannels(prev => {
-      const next = new Map(prev);
-      next.delete(pad.id);
-      return next;
-    });
-  }
-}} // Toggle
-                        onEdit={() => setShowEdit({ bankIdx: currentBankIdx, pad })}
-                        isDragging={snapshot.isDragging}
-                      />
-                    </div>
-                  )}
-                </Draggable>
-              ))}
-              {provided.placeholder}
-            </main>
-          )}
-        </Droppable>
-      </DragDropContext>
+      {/* Sortier-Raster. rectSortingStrategy kennt mehrzeilige Grids -
+          die alte Bibliothek konnte nur einzeilige Listen und hat beim
+          Ziehen ueber Zeilengrenzen falsch gerechnet. */}
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragEnd={handleDragEnd}
+      >
+        <SortableContext
+          items={currentBank.pads.map(p => p.id)}
+          strategy={rectSortingStrategy}
+        >
+          <main className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {currentBank.pads.map((pad, idx) => (
+              <SortablePad
+                key={pad.id}
+                pad={pad}
+                index={idx}
+                isActive={activeChannels.has(pad.id)}
+                activeChannels={activeChannels.size}
+                playback={playbackTimes.get(pad.id)}
+                onPlay={() => playPad(pad)}
+                onPause={() => {
+                  const channel = activeChannels.get(pad.id)
+                  if (channel) {
+                    channel.stop(pad.fadeMs || 1000)
+                    setActiveChannels(prev => {
+                      const next = new Map(prev)
+                      next.delete(pad.id)
+                      return next
+                    })
+                  }
+                }}
+                onEdit={() => setShowEdit({ bankIdx: currentBankIdx, pad })}
+              />
+            ))}
+          </main>
+        </SortableContext>
+      </DndContext>
 
       {showEdit && (
         <EditPadModal

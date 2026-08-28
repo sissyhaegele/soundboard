@@ -432,7 +432,39 @@ async function idbDel(key: string) {
     tx.onerror = () => rej(tx.error)
   })
 }
+async function idbAllKeys(): Promise<string[]> {
+  const db = await openDB()
+  return await new Promise((res, rej) => {
+    const tx = db.transaction(STORE, "readonly")
+    const rq = tx.objectStore(STORE).getAllKeys()
+    rq.onsuccess = () => res((rq.result as IDBValidKey[]).map(String))
+    rq.onerror = () => rej(rq.error)
+  })
+}
 function idbKeyForPad(padId: string) { return `pad:${padId}` }
+
+/**
+ * Fehlertext fuer Pads, deren Audio-Datei nicht mehr in der IndexedDB liegt.
+ * Wird beim Start geprueft, damit der Verlust beim Aufbau auffaellt und
+ * nicht erst beim Druecken des Pads waehrend der Veranstaltung.
+ */
+const MISSING_FILE_ERROR = "Datei fehlt - bitte neu zuweisen"
+
+/**
+ * Bittet den Browser, den lokalen Speicher dauerhaft zu behalten.
+ * Ohne das liegen die Audio-Dateien nur "best effort" in der IndexedDB und
+ * duerfen bei Speicherdruck geloescht werden - die Banks im LocalStorage
+ * bleiben dabei erhalten, die Musik waere aber weg.
+ */
+async function requestPersistentStorage(): Promise<boolean | null> {
+  if (!navigator.storage?.persist) return null
+  try {
+    if (await navigator.storage.persisted()) return true
+    return await navigator.storage.persist()
+  } catch {
+    return null
+  }
+}
 
 /* ===================== LocalStorage Keys ===================== */
 const LS_VERSION = "musicpad_v7"
@@ -458,6 +490,8 @@ function PadButton(p:{
 }) {
   const cls = p.isActive 
     ? "rounded-2xl shadow-lg p-4 border-2 border-emerald-500 bg-emerald-50"
+    : p.pad.lastError
+    ? "rounded-2xl shadow-lg p-4 border-2 border-red-400 bg-red-50 hover:shadow-xl transition-all"
     : "rounded-2xl shadow-lg p-4 border border-neutral-200 bg-white hover:border-neutral-300 hover:shadow-xl transition-all"
   
   const srcLabel = p.pad.source === "idb"
@@ -542,8 +576,9 @@ function PadButton(p:{
       </div>
       
       {p.pad.lastError && (
-        <div className="mt-1 text-xs text-red-500 truncate" title={p.pad.lastError}>
-          ⚠ {p.pad.lastError}
+        <div className="mt-2 flex items-start gap-1.5 text-xs font-medium text-red-700" title={p.pad.lastError}>
+          <AlertTriangle size={14} className="shrink-0 mt-px"/>
+          <span className="truncate">{p.pad.lastError}</span>
         </div>
       )}
       
@@ -907,6 +942,8 @@ export default function App(){
   })
   const [restoreBusy, setRestoreBusy] = useState(false)
   const [pendingPads, setPendingPads] = useState<Set<string>>(new Set())
+  const [storagePersisted, setStoragePersisted] = useState<boolean | null>(null)
+  const [checkingFiles, setCheckingFiles] = useState(false)
   const [audioNormalizationEnabled, setAudioNormalizationEnabled] = useState<boolean>(
   ()=>localStorage.getItem("musicpad_normalization_v1")!=="0"
 )
@@ -997,6 +1034,68 @@ useEffect(() => {
     channel.setNormalizationEnabled(audioNormalizationEnabled);
   });
 }, [audioNormalizationEnabled, audioChannels]);
+
+  /* ---------- Speicher-Schutz & Datei-Check ---------- */
+
+  // Einmalig beim Start: Browser bitten, die IndexedDB nicht wegzuraeumen.
+  useEffect(() => {
+    let cancelled = false
+    requestPersistentStorage().then(ok => {
+      if (!cancelled) setStoragePersisted(ok)
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  /**
+   * Gleicht alle Pads mit Quelle "idb" gegen die tatsaechlich vorhandenen
+   * Blobs ab - ueber alle Banks, nicht nur die aktuelle. Markiert fehlende
+   * Dateien und raeumt die Markierung wieder weg, sobald sie zurueck sind.
+   */
+  const verifyLocalFiles = useCallback(async () => {
+    setCheckingFiles(true)
+    try {
+      const present = new Set(await idbAllKeys())
+      setBanks(prev => {
+        let changed = false
+        const next = prev.map(bank => {
+          let bankChanged = false
+          const pads = bank.pads.map(pad => {
+            if (pad.source !== "idb") return pad
+            const exists = present.has(idbKeyForPad(pad.id))
+            if (!exists && pad.lastError !== MISSING_FILE_ERROR) {
+              bankChanged = true
+              return { ...pad, lastError: MISSING_FILE_ERROR }
+            }
+            if (exists && pad.lastError === MISSING_FILE_ERROR) {
+              bankChanged = true
+              return { ...pad, lastError: undefined }
+            }
+            return pad
+          })
+          if (!bankChanged) return bank
+          changed = true
+          return { ...bank, pads }
+        })
+        return changed ? next : prev
+      })
+    } catch (error) {
+      console.warn("Datei-Check fehlgeschlagen:", error)
+    } finally {
+      setCheckingFiles(false)
+    }
+  }, [])
+
+  // Beim Start einmal pruefen, damit der Schaden beim Aufbau sichtbar wird.
+  useEffect(() => { verifyLocalFiles() }, [verifyLocalFiles])
+
+  // Uebersicht der betroffenen Banks fuer die Warnleiste
+  const missingByBank = banks
+    .map(b => ({
+      name: b.name,
+      count: b.pads.filter(p => p.source === "idb" && p.lastError === MISSING_FILE_ERROR).length
+    }))
+    .filter(b => b.count > 0)
+  const missingTotal = missingByBank.reduce((sum, b) => sum + b.count, 0)
 
   /* ---------- PWA ---------- */
   useEffect(()=>{
@@ -1394,7 +1493,7 @@ async function playPad(pad: Pad) {
       // Finde freien Kanal
       const freeChannel = audioChannels.find(ch => !ch.padId)
       if (!freeChannel) {
-        alert('Alle 8 Audio-Kanäle sind belegt!')
+        updatePadError(pad.id, "Alle 8 Kanäle belegt")
         return
       }
       
@@ -1404,8 +1503,7 @@ async function playPad(pad: Pad) {
         if (pad.source === "idb") {
           const blob = await idbGet(idbKeyForPad(pad.id))
           if (!blob) {
-            updatePadError(pad.id, "Lokale Datei nicht gefunden")
-            alert("Lokale Datei nicht gefunden. Bitte neu auswählen.")
+            updatePadError(pad.id, MISSING_FILE_ERROR)
             return
           }
           audioSrc = URL.createObjectURL(blob)
@@ -1413,7 +1511,7 @@ async function playPad(pad: Pad) {
           audioSrc = getProxyUrl(pad.src.replace('proxy:', ''))
         } else {
           if (!pad.src) {
-            alert("Keine Quelle ausgewählt")
+            updatePadError(pad.id, "Keine Quelle hinterlegt")
             return
           }
           audioSrc = pad.src
@@ -1445,7 +1543,6 @@ async function playPad(pad: Pad) {
       } catch (error: any) {
         console.error('Playback-Fehler:', error)
         updatePadError(pad.id, error.message || "Playback-Fehler")
-        alert("Fehler beim Abspielen: " + (error.message || "Unbekannter Fehler"))
       }
     } else {
 
@@ -1460,8 +1557,7 @@ async function playPad(pad: Pad) {
         if (pad.source === "idb") {
           const blob = await idbGet(idbKeyForPad(pad.id))
           if (!blob) {
-            updatePadError(pad.id, "Lokale Datei nicht gefunden")
-            alert("Lokale Datei nicht gefunden. Bitte neu auswählen.")
+            updatePadError(pad.id, MISSING_FILE_ERROR)
             return
           }
           audioSrc = URL.createObjectURL(blob)
@@ -1469,7 +1565,7 @@ async function playPad(pad: Pad) {
           audioSrc = getProxyUrl(pad.src.replace('proxy:', ''))
         } else {
           if (!pad.src) {
-            alert("Keine Quelle ausgewählt")
+            updatePadError(pad.id, "Keine Quelle hinterlegt")
             return
           }
           audioSrc = pad.src
@@ -1492,7 +1588,6 @@ async function playPad(pad: Pad) {
       } catch (error: any) {
         console.error('Playback-Fehler:', error)
         updatePadError(pad.id, error.message || "Playback-Fehler")
-        alert("Fehler beim Abspielen: " + (error.message || "Unbekannter Fehler"))
       }
     }
   } finally {
@@ -1708,6 +1803,9 @@ async function playPad(pad: Pad) {
       if (typeof cfg.multiChannelEnabled === "boolean") setMultiChannelEnabled(cfg.multiChannelEnabled)
 
       setBanks(resultBanks)
+      // Markierungen fehlender Dateien neu bewerten - das Backup hat sie
+      // moeglicherweise gerade zurueckgebracht.
+      await verifyLocalFiles()
       alert("Backup erfolgreich wiederhergestellt.")
       setRestoreOpen(false)
       setRestoreFile(null)
@@ -1881,11 +1979,51 @@ async function playPad(pad: Pad) {
   </div>
 </header>
 
+      {/* Warnleiste: fehlende Dateien / ungeschuetzter Speicher */}
+      {(missingTotal > 0 || storagePersisted === false) && (
+        <div className="mb-4 rounded-xl border-2 border-amber-400 bg-amber-50 p-3">
+          {missingTotal > 0 && (
+            <div className="flex items-start gap-2">
+              <AlertTriangle size={18} className="text-amber-600 shrink-0 mt-0.5"/>
+              <div className="text-sm">
+                <div className="font-semibold text-amber-900">
+                  {missingTotal} Audio-{missingTotal === 1 ? "Datei fehlt" : "Dateien fehlen"}
+                </div>
+                <div className="text-amber-800">
+                  Betroffen: {missingByBank.map(b => `${b.name} (${b.count})`).join(", ")}.
+                  {" "}Die Pads sind rot markiert – Datei im Pad-Menü neu zuweisen oder ein
+                  Backup wiederherstellen.
+                </div>
+              </div>
+            </div>
+          )}
+          {storagePersisted === false && (
+            <div className={"flex items-start gap-2 text-sm " + (missingTotal > 0 ? "mt-2 pt-2 border-t border-amber-300" : "")}>
+              <AlertTriangle size={18} className="text-amber-600 shrink-0 mt-0.5"/>
+              <div className="text-amber-800">
+                Der Browser schützt den lokalen Speicher nicht dauerhaft – Audio-Dateien
+                können bei Speicherdruck gelöscht werden. Lege vor der Veranstaltung ein
+                ZIP-Backup an.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="flex flex-wrap gap-2 mb-4">
         <button className="px-3 py-2 rounded-xl border" onClick={addBank}>+ Bank hinzufügen</button>
         <button className="px-3 py-2 rounded-xl border" onClick={removeBank} disabled={banks.length<=1}><Trash2 size={16}/> Bank löschen</button>
         <button className="px-3 py-2 rounded-xl border" onClick={()=>addPads(6)}>+ 6 Pads</button>
         <button className="px-3 py-2 rounded-xl border" onClick={resetPadsTo12}>Pads zurücksetzen (12)</button>
+        <button
+          className="px-3 py-2 rounded-xl border flex items-center gap-2 disabled:opacity-60"
+          onClick={verifyLocalFiles}
+          disabled={checkingFiles}
+          title="Prüft, ob alle lokal gespeicherten Audio-Dateien noch vorhanden sind"
+        >
+          <AlertTriangle size={16}/>
+          {checkingFiles ? "Prüfe…" : "Dateien prüfen"}
+        </button>
       </div>
 
       {/* Drag & Drop Grid */}

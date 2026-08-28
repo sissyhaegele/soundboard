@@ -1113,6 +1113,21 @@ useEffect(() => {
     return () => clearInterval(id)
   }, [activeChannels])
 
+  /* ---------- Schutz vor versehentlichem Schliessen ---------- */
+  // Nur aktiv, solange wirklich etwas laeuft - sonst nervt die Rueckfrage
+  // bei jedem normalen Schliessen des Tabs.
+  useEffect(() => {
+    if (activeChannels.size === 0) return
+
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ""
+    }
+
+    window.addEventListener("beforeunload", handler)
+    return () => window.removeEventListener("beforeunload", handler)
+  }, [activeChannels.size])
+
   /* ---------- Speicher-Schutz & Datei-Check ---------- */
 
   // Einmalig beim Start: Browser bitten, die IndexedDB nicht wegzuraeumen.
@@ -1722,14 +1737,38 @@ async function playPad(pad: Pad) {
     }
     zip.file("config.json", JSON.stringify(config, null, 2))
 
+    // JSZip ueberschreibt gleichnamige Eintraege stillschweigend. Ohne die
+    // Eindeutigkeits-Pruefung unten verliert ein Backup jedes Pad, dessen
+    // Titel in derselben Bank schon einmal vorkommt - ohne Fehlermeldung.
+    const safeName = (v: string) => v.replace(/[\/:*?"<>|]+/g, "_")
+    const usedBankFolders = new Set<string>()
+
     for (const bank of banks) {
+      const bankBase = safeName(bank.name || "Bank")
+      let bankFolder = bankBase
+      let bankAttempt = 2
+      while (usedBankFolders.has(bankFolder)) {
+        bankFolder = bankBase + " (" + (bankAttempt++) + ")"
+      }
+      usedBankFolders.add(bankFolder)
+
+      const usedNames = new Set<string>()
+
       for (const pad of bank.pads) {
         if (pad.source === "idb") {
           const blob = await idbGet(idbKeyForPad(pad.id))
           if (blob) {
-            const base = (pad.title || pad.id).replace(/[\\/:*?"<>|]+/g,"_")
+            const base = safeName(pad.title || pad.id)
             const ext = pad.filename?.split(".").pop()?.toLowerCase() || "webm"
-            zip.file(`banks/${bank.name}/${base}.${ext}`, blob)
+            let name = base + "." + ext
+            if (usedNames.has(name)) {
+              // Gleicher Titel in derselben Bank: Pad-ID anhaengen. Der
+              // Restore erkennt dieses Suffix wieder und ordnet die Datei
+              // dem richtigen Pad zu.
+              name = base + "__" + pad.id + "." + ext
+            }
+            usedNames.add(name)
+            zip.file("banks/" + bankFolder + "/" + name, blob)
           }
         }
       }
@@ -1814,7 +1853,14 @@ async function playPad(pad: Pad) {
         const blob = await entry.async("blob")
         const bank = getOrCreateBankByName(bankName)
 
-        let pad = bank.pads.find(p => (p.title||"") === base) || bank.pads.find(p => p.id === base)
+        // Reihenfolge: erst die eindeutigen Treffer ueber die Pad-ID
+        // (auch als "__<id>"-Suffix aus dem Export bei Titel-Kollisionen),
+        // dann der Titel. Aeltere Backups ohne Suffix landen weiterhin
+        // ueber den Titel beim richtigen Pad.
+        let pad =
+          bank.pads.find(p => p.id === base) ||
+          bank.pads.find(p => base.endsWith("__" + p.id)) ||
+          bank.pads.find(p => (p.title||"") === base)
         if (!pad) {
           const newPad: Pad = { 
             id: uid(), 

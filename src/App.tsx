@@ -39,6 +39,23 @@ function secondsToTimeString(seconds: number): string {
   return `${mins}:${secStr}`;
 }
 
+/** Laufzeit-Anzeige: M:SS, ohne Nachkommastellen. */
+function formatClock(seconds: number): string {
+  if (!isFinite(seconds) || seconds < 0) return "0:00"
+  const total = Math.floor(seconds)
+  const mins = Math.floor(total / 60)
+  const secs = total % 60
+  return `${mins}:${secs < 10 ? "0" : ""}${secs}`
+}
+
+/** Eingestellte Startzeit: M:SS, Zehntel nur wenn wirklich gesetzt. */
+function formatStartTime(seconds: number): string {
+  const whole = Math.floor(seconds)
+  const frac = seconds - whole
+  const base = formatClock(whole)
+  return frac >= 0.05 ? base + frac.toFixed(1).slice(1) : base
+}
+
 /* ===================== Audio Channel Klasse ===================== */
 
 /**
@@ -484,6 +501,7 @@ function PadButton(p:{
   pad:Pad; 
   isActive:boolean; 
   activeChannels: number;
+  playback?: { current:number; duration:number };
   onPlay:()=>void; 
   onPause:()=>void; 
   onEdit:()=>void;
@@ -522,7 +540,7 @@ function PadButton(p:{
             </span>
           )}
           {p.pad.startTime && p.pad.startTime > 0 && (
-            <span title={`Start: ${secondsToTimeString(p.pad.startTime)}`}>
+            <span title={`Startet bei ${formatStartTime(p.pad.startTime)}`}>
               <Clock size={14} className="text-blue-500" />
             </span>
           )}
@@ -558,6 +576,33 @@ function PadButton(p:{
           </button>
       }
       
+      {/* Laufzeit - nur waehrend der Wiedergabe */}
+      {p.isActive && p.playback && p.playback.duration > 0 && (
+        <div className="mt-2">
+          <div className="relative h-1 rounded-full bg-emerald-200 overflow-hidden">
+            <div
+              className="h-full bg-emerald-600 transition-[width] duration-200 ease-linear"
+              style={{ width: `${Math.min(100, (p.playback.current / p.playback.duration) * 100)}%` }}
+            />
+            {/* Marke fuer die eingestellte Startzeit - macht sichtbar,
+                warum der Balken nicht bei 0 beginnt. */}
+            {!!p.pad.startTime && p.pad.startTime > 0 && p.pad.startTime < p.playback.duration && (
+              <div
+                className="absolute top-0 h-full w-0.5 bg-blue-600"
+                style={{ left: `${(p.pad.startTime / p.playback.duration) * 100}%` }}
+                title={`Startet bei ${formatStartTime(p.pad.startTime)}`}
+              />
+            )}
+          </div>
+          <div className="mt-1 flex items-center justify-between text-xs tabular-nums text-emerald-800">
+            <span>{formatClock(p.playback.current)} / {formatClock(p.playback.duration)}</span>
+            <span className="text-emerald-700">
+              noch {formatClock(Math.max(0, p.playback.duration - p.playback.current))}
+            </span>
+          </div>
+        </div>
+      )}
+
       <div className="mt-2 text-xs text-neutral-500 truncate">{srcLabel}</div>
       
       {/* Zeit-Anzeigen */}
@@ -565,7 +610,7 @@ function PadButton(p:{
         {(p.pad.startTime && p.pad.startTime > 0) && (
           <div className="text-xs text-blue-600 flex items-center gap-1">
             <Clock size={10}/>
-            Start: {secondsToTimeString(p.pad.startTime)}
+            ab {formatStartTime(p.pad.startTime)}
           </div>
         )}
         {p.pad.loop && (
@@ -917,6 +962,7 @@ export default function App(){
     Array.from({ length: 8 }, (_, i) => new AudioChannel(`channel-${i}`))
   )
   const [activeChannels, setActiveChannels] = useState<Map<string, AudioChannel>>(new Map())
+  const [playbackTimes, setPlaybackTimes] = useState<Map<string, {current:number; duration:number}>>(new Map())
 
   const [hotkeysEnabled,setHotkeysEnabled] = useState<boolean>(()=>localStorage.getItem(LS_HOTKEYS)!=="0")
   const [showEdit,setShowEdit] = useState<{bankIdx:number; pad:Pad} | null>(null)
@@ -1038,6 +1084,34 @@ useEffect(() => {
     channel.setNormalizationEnabled(audioNormalizationEnabled);
   });
 }, [audioNormalizationEnabled, audioChannels]);
+
+  /* ---------- Laufzeit-Ticker ---------- */
+  // Fragt die Position der aktiven Kanaele ab. Laeuft bewusst nur, solange
+  // wirklich etwas spielt - im Leerlauf tickt nichts.
+  useEffect(() => {
+    if (activeChannels.size === 0) {
+      setPlaybackTimes(prev => prev.size ? new Map() : prev)
+      return
+    }
+
+    const read = () => {
+      setPlaybackTimes(() => {
+        const next = new Map<string, {current:number; duration:number}>()
+        activeChannels.forEach((channel, padId) => {
+          const duration = channel.getDuration()
+          next.set(padId, {
+            current: channel.getCurrentTime(),
+            duration: isFinite(duration) ? duration : 0
+          })
+        })
+        return next
+      })
+    }
+
+    read()
+    const id = setInterval(read, 200)
+    return () => clearInterval(id)
+  }, [activeChannels])
 
   /* ---------- Speicher-Schutz & Datei-Check ---------- */
 
@@ -2050,6 +2124,7 @@ async function playPad(pad: Pad) {
                         pad={pad}
                         isActive={activeChannels.has(pad.id)}
                         activeChannels={activeChannels.size}
+                        playback={playbackTimes.get(pad.id)}
                         onPlay={() => playPad(pad)}
                         onPause={() => {
   const channel = activeChannels.get(pad.id);

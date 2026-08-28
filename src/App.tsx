@@ -475,6 +475,7 @@ const LS_HOTKEYS = "musicpad_offline_hotkeys_enabled_v1"
 const LS_MIDI    = "musicpad_offline_midi_enabled_v1"
 const LS_MIDI_IN = "musicpad_offline_midi_input_id_v1"
 const LS_MULTI   = "musicpad_offline_multichannel_v1"
+const LS_STORAGE_HINT = "musicpad_storage_hint_dismissed_v1"
 
 
 /* ===================== UI: Pad ===================== */
@@ -943,6 +944,9 @@ export default function App(){
   const [restoreBusy, setRestoreBusy] = useState(false)
   const [pendingPads, setPendingPads] = useState<Set<string>>(new Set())
   const [storagePersisted, setStoragePersisted] = useState<boolean | null>(null)
+  const [storageHintDismissed, setStorageHintDismissed] = useState<boolean>(
+    () => localStorage.getItem(LS_STORAGE_HINT) === "1"
+  )
   const [checkingFiles, setCheckingFiles] = useState(false)
   const [audioNormalizationEnabled, setAudioNormalizationEnabled] = useState<boolean>(
   ()=>localStorage.getItem("musicpad_normalization_v1")!=="0"
@@ -1969,34 +1973,39 @@ async function playPad(pad: Pad) {
   </div>
 </header>
 
-      {/* Warnleiste: fehlende Dateien / ungeschuetzter Speicher */}
-      {(missingTotal > 0 || storagePersisted === false) && (
-        <div className="mb-4 rounded-xl border-2 border-amber-400 bg-amber-50 p-3">
-          {missingTotal > 0 && (
-            <div className="flex items-start gap-2">
-              <AlertTriangle size={18} className="text-amber-600 shrink-0 mt-0.5"/>
-              <div className="text-sm">
-                <div className="font-semibold text-amber-900">
-                  {missingTotal} Audio-{missingTotal === 1 ? "Datei fehlt" : "Dateien fehlen"}
-                </div>
-                <div className="text-amber-800">
-                  Betroffen: {missingByBank.map(b => `${b.name} (${b.count})`).join(", ")}.
-                  {" "}Die Pads sind rot markiert – Datei im Pad-Menü neu zuweisen oder ein
-                  Backup wiederherstellen.
-                </div>
-              </div>
-            </div>
-          )}
-          {storagePersisted === false && (
-            <div className={"flex items-start gap-2 text-sm " + (missingTotal > 0 ? "mt-2 pt-2 border-t border-amber-300" : "")}>
-              <AlertTriangle size={18} className="text-amber-600 shrink-0 mt-0.5"/>
-              <div className="text-amber-800">
-                Der Browser schützt den lokalen Speicher nicht dauerhaft – Audio-Dateien
-                können bei Speicherdruck gelöscht werden. Lege vor der Veranstaltung ein
-                ZIP-Backup an.
-              </div>
-            </div>
-          )}
+      {/* Fehlende Dateien: schmale Zeile - die roten Pads sind das
+          eigentliche Signal, hier zaehlt nur der Ueberblick. */}
+      {missingTotal > 0 && (
+        <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-sm text-amber-900">
+          <AlertTriangle size={15} className="shrink-0 text-amber-600"/>
+          <span className="truncate">
+            <span className="font-medium">
+              {missingTotal} {missingTotal === 1 ? "Datei fehlt" : "Dateien fehlen"}
+            </span>
+            {" · "}
+            {missingByBank.map(b => `${b.name} (${b.count})`).join(", ")}
+          </span>
+        </div>
+      )}
+
+      {/* Speicher-Hinweis: leise und ausblendbar - er kann dauerhaft
+          anliegen, ohne dass sich unmittelbar etwas tun laesst. */}
+      {storagePersisted === false && !storageHintDismissed && (
+        <div className="mb-3 flex items-center gap-2 text-xs text-neutral-500">
+          <AlertTriangle size={12} className="shrink-0"/>
+          <span className="truncate">
+            Speicher nicht dauerhaft geschützt – vor der Veranstaltung ein ZIP-Backup anlegen.
+          </span>
+          <button
+            className="ml-auto shrink-0 p-1 rounded hover:bg-neutral-100 hover:text-neutral-700"
+            title="Hinweis ausblenden"
+            onClick={()=>{
+              setStorageHintDismissed(true)
+              try { localStorage.setItem(LS_STORAGE_HINT, "1") } catch {}
+            }}
+          >
+            <X size={12}/>
+          </button>
         </div>
       )}
 

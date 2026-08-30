@@ -12,8 +12,8 @@ import {
 import JSZip from "jszip"
 import { saveAs } from "file-saver"
 import {
-  DndContext, DragEndEvent, PointerSensor, KeyboardSensor,
-  useSensor, useSensors, closestCenter
+  DndContext, DragEndEvent, DragStartEvent, PointerSensor, KeyboardSensor,
+  useSensor, useSensors, closestCenter, useDroppable
 } from '@dnd-kit/core'
 import {
   SortableContext, rectSortingStrategy, arrayMove,
@@ -689,6 +689,26 @@ function SortablePad(props: {
   )
 }
 
+/* ===================== UI: Bank als Ablegeziel ===================== */
+/** Chip, auf den ein Pad gezogen werden kann, um es in diese Bank zu legen. */
+function BankDropTarget(props: { bankIdx: number; name: string; padCount: number }) {
+  const { setNodeRef, isOver } = useDroppable({ id: `bank:${props.bankIdx}` })
+  return (
+    <div
+      ref={setNodeRef}
+      className={
+        "px-3 py-2 rounded-xl border-2 border-dashed text-sm whitespace-nowrap transition-colors " +
+        (isOver
+          ? "border-emerald-500 bg-emerald-50 text-emerald-900 font-medium"
+          : "border-neutral-300 bg-white text-neutral-600")
+      }
+    >
+      {props.name}
+      <span className="ml-1 text-xs text-neutral-400">({props.padCount})</span>
+    </div>
+  )
+}
+
 /* ===================== UI: Edit Modal ===================== */
 function EditPadModal(props:{
   pad: Pad
@@ -700,8 +720,11 @@ function EditPadModal(props:{
   onTryProxy: (pad:Pad)=>Promise<void>
   midiLearningFor?: string | null
   isTestingUrl?: boolean
+  banks: Bank[]
+  currentBankIdx: number
+  onMoveToBank: (targetBankIdx:number)=>void
 }){
-  const { pad, onClose, onSave, onClearLocal, onStartMidiLearn, onTestUrl, onTryProxy, midiLearningFor, isTestingUrl } = props
+  const { pad, onClose, onSave, onClearLocal, onStartMidiLearn, onTestUrl, onTryProxy, midiLearningFor, isTestingUrl, banks, currentBankIdx, onMoveToBank } = props
   const [pState, setP] = useState<Pad>(pad)
   const [urlToTest, setUrlToTest] = useState("")
   const [timeInput, setTimeInput] = useState(secondsToTimeString(pad.startTime || 0))
@@ -986,6 +1009,32 @@ function EditPadModal(props:{
           <span className="text-xs text-neutral-500">Beim Lernen wird die nächste empfangene Note gespeichert.</span>
         </div>
 
+        {/* Pad in eine andere Bank verschieben - der verlaessliche Weg ohne
+            Ziehgeste. Die Audio-Datei bleibt dabei erhalten. */}
+        {banks.length > 1 && (
+          <div className="border-t pt-3 mt-3">
+            <label className="grid gap-1">
+              <span className="text-sm">In andere Bank verschieben</span>
+              <select
+                className="border p-2 rounded-xl"
+                value=""
+                onChange={(e)=>{
+                  const target = parseInt(e.target.value, 10)
+                  if (!isNaN(target)) onMoveToBank(target)
+                }}
+              >
+                <option value="">Bank wählen…</option>
+                {banks.map((b, i) => i === currentBankIdx ? null : (
+                  <option key={b.id} value={i}>{b.name} ({b.pads.length} {b.pads.length === 1 ? "Pad" : "Pads"})</option>
+                ))}
+              </select>
+              <span className="text-xs text-neutral-500">
+                Nicht gespeicherte Änderungen an diesem Pad gehen dabei verloren.
+              </span>
+            </label>
+          </div>
+        )}
+
         <div className="flex justify-end gap-2 mt-4">
           <button className="px-3 py-2 rounded-xl border" onClick={onClose}>Abbrechen</button>
           <button className="px-3 py-2 rounded-xl bg-emerald-600 text-white" onClick={()=>onSave(pState)}><Save size={16}/> Speichern</button>
@@ -1051,6 +1100,7 @@ export default function App(){
     () => localStorage.getItem(LS_STORAGE_HINT) === "1"
   )
   const [checkingFiles, setCheckingFiles] = useState(false)
+  const [draggingPadId, setDraggingPadId] = useState<string | null>(null)
   const [audioNormalizationEnabled, setAudioNormalizationEnabled] = useState<boolean>(
   ()=>localStorage.getItem("musicpad_normalization_v1")!=="0"
 )
@@ -1427,10 +1477,54 @@ useEffect(()=>{
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   )
 
+  /**
+   * Verschiebt ein Pad in eine andere Bank. Die Audio-Datei liegt in der
+   * IndexedDB unter der Pad-ID und muss deshalb nicht mit umziehen.
+   */
+  function movePadToBank(padId: string, fromBankIdx: number, toBankIdx: number) {
+    if (fromBankIdx === toBankIdx) return
+
+    // Laeuft das Pad gerade, erst stoppen - sonst zeigt es weiter als aktiv,
+    // waehrend es in einer Bank liegt, die gar nicht sichtbar ist.
+    const channel = activeChannels.get(padId)
+    if (channel) {
+      channel.stop(300)
+      setActiveChannels(prev => {
+        const next = new Map(prev)
+        next.delete(padId)
+        return next
+      })
+    }
+
+    setBanks(prev => {
+      const pad = prev[fromBankIdx]?.pads.find(p => p.id === padId)
+      if (!pad) return prev
+      return prev.map((b, idx) => {
+        if (idx === fromBankIdx) return { ...b, pads: b.pads.filter(p => p.id !== padId) }
+        if (idx === toBankIdx)   return { ...b, pads: [...b.pads, pad] }
+        return b
+      })
+    })
+  }
+
+  const handleDragStart = (event: DragStartEvent) => {
+    setDraggingPadId(String(event.active.id))
+  }
+
   const handleDragEnd = (event: DragEndEvent) => {
+    setDraggingPadId(null)
     const { active, over } = event
     if (!over || active.id === over.id) return
 
+    // Auf einer anderen Bank abgelegt?
+    const overId = String(over.id)
+    if (overId.startsWith("bank:")) {
+      const target = parseInt(overId.slice(5), 10)
+      if (!isNaN(target)) movePadToBank(String(active.id), currentBankIdx, target)
+      return
+    }
+
+    // Sonst: Umsortieren innerhalb der Bank
     const oldIndex = currentBank.pads.findIndex(p => p.id === active.id)
     const newIndex = currentBank.pads.findIndex(p => p.id === over.id)
     if (oldIndex < 0 || newIndex < 0) return
@@ -2217,7 +2311,9 @@ async function playPad(pad: Pad) {
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}
+        onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
+        onDragCancel={()=>setDraggingPadId(null)}
       >
         <SortableContext
           items={currentBank.pads.map(p => p.id)}
@@ -2249,6 +2345,21 @@ async function playPad(pad: Pad) {
             ))}
           </main>
         </SortableContext>
+
+        {/* Erscheint nur waehrend des Ziehens: Ablegeziele fuer die anderen
+            Banks. Fix am unteren Rand, damit das Raster nicht verspringt. */}
+        {draggingPadId && banks.length > 1 && (
+          <div className="fixed inset-x-0 bottom-0 z-40 border-t bg-white/95 backdrop-blur px-4 py-3 shadow-lg">
+            <div className="flex items-center gap-2 overflow-x-auto">
+              <span className="text-sm text-neutral-500 whitespace-nowrap mr-1">
+                In andere Bank verschieben:
+              </span>
+              {banks.map((b, idx) => idx === currentBankIdx ? null : (
+                <BankDropTarget key={b.id} bankIdx={idx} name={b.name} padCount={b.pads.length}/>
+              ))}
+            </div>
+          </div>
+        )}
       </DndContext>
 
       {showEdit && (
@@ -2262,6 +2373,12 @@ async function playPad(pad: Pad) {
           onTryProxy={tryProxyForPad}
           midiLearningFor={midiLearningFor}
           isTestingUrl={isTestingUrl}
+          banks={banks}
+          currentBankIdx={showEdit.bankIdx}
+          onMoveToBank={(target)=>{
+            movePadToBank(showEdit.pad.id, showEdit.bankIdx, target)
+            setShowEdit(null)
+          }}
         />
       )}
 

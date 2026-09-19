@@ -1301,55 +1301,53 @@ useEffect(() => {
   useEffect(()=>{
     // Die Registrierung des Service Workers passiert in index.html - dort
     // wird localhost ausgenommen, damit der SW im Dev-Betrieb nicht
-    // dazwischenfunkt. Hier geht es nur um den Installations-Prompt.
-    const isPWASupported = () => {
-      return (
-        'serviceWorker' in navigator &&
-        'beforeinstallprompt' in window &&
-        (window.location.protocol === 'https:' || 
-        window.location.hostname === 'localhost' ||
-        window.location.hostname === '127.0.0.1')
-      )
-    }
+    // dazwischenfunkt. Hier geht es nur um den Installations-Button.
 
-    if (!isPWASupported()) {
-      console.log('PWA nicht unterstützt - HTTPS erforderlich oder unsicherer Context')
+    // isSecureContext deckt HTTPS und localhost ab. Frueher stand hier
+    // zusaetzlich `'beforeinstallprompt' in window` - das ist in jedem
+    // Browser false (die Eigenschaft heisst onbeforeinstallprompt), die
+    // Pruefung schlug also immer fehl.
+    if (!('serviceWorker' in navigator) || !window.isSecureContext) {
+      console.log('PWA-Installation nicht verfügbar - kein sicherer Kontext')
       return
     }
 
-    const handler = (e: any) => { 
+    // Laeuft bereits als installierte App: kein Installations-Button.
+    const isStandalone =
+      window.matchMedia('(display-mode: standalone)').matches ||
+      (window.navigator as any).standalone === true ||
+      document.referrer.includes('android-app://')
+    if (isStandalone) return
+
+    let promptReceived = false
+
+    const onBeforeInstallPrompt = (e: any) => {
       e.preventDefault()
+      promptReceived = true
       setInstallPromptEvt(e)
       setCanInstall(true)
-      console.log('PWA Install-Prompt empfangen')
     }
-    
-    const checkIfInstalled = () => {
-      const isStandalone = window.matchMedia('(display-mode: standalone)').matches ||
-                          (window.navigator as any).standalone ||
-                          document.referrer.includes('android-app://')
-      
-      if (isStandalone) {
-        console.log('App bereits als PWA installiert')
-        setCanInstall(false)
-      }
+
+    const onAppInstalled = () => {
+      setInstallPromptEvt(null)
+      setCanInstall(false)
     }
-    
-    checkIfInstalled()
-    window.addEventListener("beforeinstallprompt", handler)
-    
+
+    window.addEventListener("beforeinstallprompt", onBeforeInstallPrompt)
+    window.addEventListener("appinstalled", onAppInstalled)
+
+    // Browser ohne beforeinstallprompt (Firefox, Safari): Button zeigen,
+    // der eine Anleitung fuer die manuelle Installation einblendet.
     const fallbackTimer = setTimeout(() => {
-      if (!installPromptEvt && isPWASupported() && !canInstall) {
-        console.log('Kein beforeinstallprompt Event - zeige manuellen Button')
-        setCanInstall(true)
-      }
+      if (!promptReceived) setCanInstall(true)
     }, 3000)
-    
+
     return () => {
-      window.removeEventListener("beforeinstallprompt", handler)
+      window.removeEventListener("beforeinstallprompt", onBeforeInstallPrompt)
+      window.removeEventListener("appinstalled", onAppInstalled)
       clearTimeout(fallbackTimer)
     }
-  },[installPromptEvt, canInstall])
+  },[])
   
   async function handleInstallClick(){
     if(!installPromptEvt) {

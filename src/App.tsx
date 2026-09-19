@@ -1710,6 +1710,30 @@ async function clearLocal(p: Pad) {
   }
 
   /* ---------- Multi-Channel Player ---------- */
+
+  /**
+   * Ermittelt die abspielbare Quelle eines Pads. Gibt null zurueck und
+   * markiert das Pad, wenn es nichts abzuspielen gibt.
+   */
+  async function resolvePadSource(pad: Pad): Promise<string | null> {
+    if (pad.source === "idb") {
+      const blob = await idbGet(idbKeyForPad(pad.id))
+      if (!blob) {
+        updatePadError(pad.id, MISSING_FILE_ERROR)
+        return null
+      }
+      return URL.createObjectURL(blob)
+    }
+    if (pad.source === "proxy") {
+      return getProxyUrl(pad.src.replace('proxy:', ''))
+    }
+    if (!pad.src) {
+      updatePadError(pad.id, "Keine Quelle hinterlegt")
+      return null
+    }
+    return pad.src
+  }
+
 async function playPad(pad: Pad) {
   // Verhindere Race Conditions bei schnellem Klicken
   if (pendingPads.has(pad.id)) return;
@@ -1739,24 +1763,8 @@ async function playPad(pad: Pad) {
       }
       
       try {
-        let audioSrc = ""
-        
-        if (pad.source === "idb") {
-          const blob = await idbGet(idbKeyForPad(pad.id))
-          if (!blob) {
-            updatePadError(pad.id, MISSING_FILE_ERROR)
-            return
-          }
-          audioSrc = URL.createObjectURL(blob)
-        } else if (pad.source === "proxy") {
-          audioSrc = getProxyUrl(pad.src.replace('proxy:', ''))
-        } else {
-          if (!pad.src) {
-            updatePadError(pad.id, "Keine Quelle hinterlegt")
-            return
-          }
-          audioSrc = pad.src
-        }
+        const audioSrc = await resolvePadSource(pad)
+        if (!audioSrc) return
         
         await freeChannel.play(
           audioSrc,
@@ -1788,29 +1796,18 @@ async function playPad(pad: Pad) {
     } else {
 
       // Single-Channel Mode (alle anderen stoppen)
-      await stopAllChannels()
-      
+      //
+      // Erst die Quelle des neuen Pads pruefen, DANN den laufenden Song
+      // stoppen. Frueher lief es umgekehrt: ein versehentlich ausgeloestes
+      // leeres Pad (Klick, Zifferntaste, MIDI) beendete den laufenden Song
+      // und spielte dann nichts ab.
       const channel = audioChannels[0]
       
       try {
-        let audioSrc = ""
-        
-        if (pad.source === "idb") {
-          const blob = await idbGet(idbKeyForPad(pad.id))
-          if (!blob) {
-            updatePadError(pad.id, MISSING_FILE_ERROR)
-            return
-          }
-          audioSrc = URL.createObjectURL(blob)
-        } else if (pad.source === "proxy") {
-          audioSrc = getProxyUrl(pad.src.replace('proxy:', ''))
-        } else {
-          if (!pad.src) {
-            updatePadError(pad.id, "Keine Quelle hinterlegt")
-            return
-          }
-          audioSrc = pad.src
-        }
+        const audioSrc = await resolvePadSource(pad)
+        if (!audioSrc) return
+
+        await stopAllChannels()
         
         await channel.play(
             audioSrc,

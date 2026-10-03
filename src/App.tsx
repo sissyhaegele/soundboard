@@ -710,11 +710,17 @@ function BankDropTarget(props: { bankIdx: number; name: string; padCount: number
 }
 
 /* ===================== UI: Edit Modal ===================== */
+
+/**
+ * Vorgemerkte Audio-Aenderung im Pad-Dialog. Sie wird erst beim Speichern
+ * ausgefuehrt - so laesst "Abbrechen" die gespeicherte Datei unberuehrt.
+ */
+type PendingAudio = { kind: "replace"; file: File } | { kind: "clear" } | null
+
 function EditPadModal(props:{
   pad: Pad
   onClose: ()=>void
-  onSave: (p:Pad)=>void
-  onClearLocal: (p:Pad)=>void
+  onSave: (p:Pad, pendingAudio: PendingAudio)=>Promise<void>|void
   onStartMidiLearn: (padId:string)=>void
   onTestUrl: (url:string)=>Promise<void>
   onTryProxy: (pad:Pad)=>Promise<void>
@@ -724,10 +730,12 @@ function EditPadModal(props:{
   currentBankIdx: number
   onMoveToBank: (targetBankIdx:number)=>void
 }){
-  const { pad, onClose, onSave, onClearLocal, onStartMidiLearn, onTestUrl, onTryProxy, midiLearningFor, isTestingUrl, banks, currentBankIdx, onMoveToBank } = props
+  const { pad, onClose, onSave, onStartMidiLearn, onTestUrl, onTryProxy, midiLearningFor, isTestingUrl, banks, currentBankIdx, onMoveToBank } = props
   const [pState, setP] = useState<Pad>(pad)
   const [urlToTest, setUrlToTest] = useState("")
   const [timeInput, setTimeInput] = useState(secondsToTimeString(pad.startTime || 0))
+  const [pendingAudio, setPendingAudio] = useState<PendingAudio>(null)
+  const [saving, setSaving] = useState(false)
 
   const handleTimeInputChange = (value: string) => {
     setTimeInput(value)
@@ -832,6 +840,14 @@ function EditPadModal(props:{
 
         <div className="grid gap-1 mb-3">
           <span className="text-sm font-medium">Datei lokal speichern (im Browser)</span>
+          {pendingAudio && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs text-amber-900">
+              {pendingAudio.kind === "replace"
+                ? "Neue Datei vorgemerkt – wird erst mit „Speichern“ übernommen."
+                : "Löschen vorgemerkt – die Datei wird erst mit „Speichern“ entfernt."}
+              {" Mit „Abbrechen“ bleibt alles wie bisher."}
+            </div>
+          )}
           <span className="text-xs text-neutral-500">Die Datei wird nur in diesem Browser gespeichert – nicht hochgeladen oder geteilt.</span>
           
           {pState.source === "idb" ? (
@@ -850,31 +866,38 @@ function EditPadModal(props:{
                     type="file"
                     accept="audio/*"
                     className="hidden"
-                    onChange={async e=>{
+                    onChange={e=>{
                       const f = e.target.files?.[0]
                       if(!f) return
                       if(!(f.type||"").startsWith("audio/")){ alert("Bitte mp3/wav/m4a wählen."); return }
-                      try {
-                        await idbPut(idbKeyForPad(pState.id), f)
-                        setP({
-                          ...pState,
-                          source: "idb",
-                          src: "idb:"+pState.id,
-                          filename: f.name,
-                          size: f.size,
-                          corsError: false,
-                          lastError: undefined
-                        })
-                      } catch (error) {
-                        console.error('IndexedDB Fehler:', error)
-                        alert("Fehler beim Speichern. Versuche es erneut oder lade die Seite neu.")
-                      }
+                      // Noch nichts schreiben - erst beim Speichern.
+                      setPendingAudio({ kind: "replace", file: f })
+                      setP({
+                        ...pState,
+                        source: "idb",
+                        src: "idb:"+pState.id,
+                        filename: f.name,
+                        size: f.size,
+                        corsError: false,
+                        lastError: undefined
+                      })
                     }}
                   />
                 </label>
                 <button 
                   className="px-3 py-1.5 rounded-lg border border-red-200 text-red-600 text-xs hover:bg-red-50 transition-colors"
-                  onClick={()=>onClearLocal(pState)}
+                  onClick={()=>{
+                    // Nur vormerken - gelöscht wird beim Speichern.
+                    setPendingAudio({ kind: "clear" })
+                    setP({
+                      ...pState,
+                      source: "url",
+                      src: "",
+                      filename: undefined,
+                      size: undefined,
+                      lastError: undefined
+                    })
+                  }}
                 >
                   Lokal löschen
                 </button>
@@ -884,25 +907,21 @@ function EditPadModal(props:{
             <input
               type="file"
               accept="audio/*"
-              onChange={async e=>{
+              onChange={e=>{
                 const f = e.target.files?.[0]
                 if(!f) return
                 if(!(f.type||"").startsWith("audio/")){ alert("Bitte mp3/wav/m4a wählen."); return }
-                try {
-                  await idbPut(idbKeyForPad(pState.id), f)
-                  setP({
-                    ...pState,
-                    source: "idb",
-                    src: "idb:"+pState.id,
-                    filename: f.name,
-                    size: f.size,
-                    corsError: false,
-                    lastError: undefined
-                  })
-                } catch (error) {
-                  console.error('IndexedDB Fehler:', error)
-                  alert("Fehler beim Speichern. Versuche es erneut oder lade die Seite neu.")
-                }
+                // Noch nichts schreiben - erst beim Speichern.
+                setPendingAudio({ kind: "replace", file: f })
+                setP({
+                  ...pState,
+                  source: "idb",
+                  src: "idb:"+pState.id,
+                  filename: f.name,
+                  size: f.size,
+                  corsError: false,
+                  lastError: undefined
+                })
               }}
             />
           )}
@@ -1036,8 +1055,23 @@ function EditPadModal(props:{
         )}
 
         <div className="flex justify-end gap-2 mt-4">
-          <button className="px-3 py-2 rounded-xl border" onClick={onClose}>Abbrechen</button>
-          <button className="px-3 py-2 rounded-xl bg-emerald-600 text-white" onClick={()=>onSave(pState)}><Save size={16}/> Speichern</button>
+          <button className="px-3 py-2 rounded-xl border disabled:opacity-60" onClick={onClose} disabled={saving}>
+            Abbrechen
+          </button>
+          <button
+            className="px-3 py-2 rounded-xl bg-emerald-600 text-white flex items-center gap-2 disabled:opacity-60"
+            disabled={saving}
+            onClick={async ()=>{
+              setSaving(true)
+              try {
+                await onSave(pState, pendingAudio)
+              } finally {
+                setSaving(false)
+              }
+            }}
+          >
+            <Save size={16}/> {saving ? "Speichere…" : "Speichern"}
+          </button>
         </div>
       </div>
     </div>
@@ -1539,25 +1573,6 @@ async function stopAllChannels() {
   await Promise.all(promises)
   setActiveChannels(new Map())
 }
-async function clearLocal(p: Pad) {
-  if (p.source !== "idb") return
-  await idbDel(idbKeyForPad(p.id))
-  setBanks(prev => {
-    const copy = prev.map((b, i) => i !== currentBankIdx ? b : ({
-      ...b, 
-      pads: b.pads.map(x => x.id === p.id ? ({
-        ...x, 
-        source: "url" as SourceType, 
-        src: "", 
-        filename: undefined, 
-        size: undefined
-      }) : x)
-    }))
-    return copy
-  })
-  alert("Lokale Datei gelöscht.")
-}
-
   /* ---------- Hotkeys ---------- */
   useEffect(() => {
     if (!hotkeysEnabled) return
@@ -2361,8 +2376,24 @@ async function playPad(pad: Pad) {
         <EditPadModal
           pad={showEdit.pad}
           onClose={()=>setShowEdit(null)}
-          onSave={(np)=>{ setBanks(prev=> prev.map((b,i)=> i!==showEdit.bankIdx? b : ({...b, pads: b.pads.map(p=> p.id===np.id? np : p)}))); setShowEdit(null) }}
-          onClearLocal={clearLocal}
+          onSave={async (np, pendingAudio)=>{
+            // Erst die Audio-Datei schreiben bzw. loeschen, dann die
+            // Pad-Daten uebernehmen. Schlaegt das Schreiben fehl, bleibt
+            // alles unveraendert und der Dialog offen.
+            try {
+              if (pendingAudio?.kind === "replace") {
+                await idbPut(idbKeyForPad(np.id), pendingAudio.file)
+              } else if (pendingAudio?.kind === "clear") {
+                await idbDel(idbKeyForPad(np.id))
+              }
+            } catch (error) {
+              console.error('IndexedDB Fehler:', error)
+              alert("Die Audio-Datei konnte nicht gespeichert werden. Möglicherweise ist der Speicher voll.")
+              return
+            }
+            setBanks(prev=> prev.map((b,i)=> i!==showEdit.bankIdx? b : ({...b, pads: b.pads.map(p=> p.id===np.id? np : p)})))
+            setShowEdit(null)
+          }}
           onStartMidiLearn={(padId)=> setMidiLearningFor(prev => prev===padId ? null : padId)}
           onTestUrl={testUrlForCors}
           onTryProxy={tryProxyForPad}
